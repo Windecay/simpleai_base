@@ -147,20 +147,30 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                 length = 16 if length > 16 else length
                 print(f'{utils.now_string()} [ComfyClient] feedback_stream({len(out)})={out[:length]}...')
             if current_type == 'progress':
-                if current_node and current_node in prompt:
-                    if prompt[current_node]['class_type'] in save_nodes:
-                        (media_type, media_format) = get_media_info(out[:8])
-                        media_name = f'{prompt[current_node]["_meta"]["title"]}_{media_type}_{media_format}'
-                        images_output = output_images.get(media_name, [])
-                        if media_type=='video':
-                            images_output.append(out)
-                        else:
-                            images_output.append(out[8:])
-                        output_images[media_name] = images_output
-                    elif prompt[current_node]['class_type'] in preview_nodes and callback is not None:
-                        if current_step <= current_total_steps:
-                            finished_steps += 1
-                            callback(finished_steps, total_steps_known, np.array(Image.open(BytesIO(out[8:]))))
+                if current_node:
+                    node_to_check = current_node
+                    if node_to_check not in prompt:
+                        parts = node_to_check.split('.')
+                        for i in range(len(parts) - 1, -1, -1):
+                            test_id = '.'.join(parts[i:])
+                            if test_id in prompt:
+                                node_to_check = test_id
+                                break
+
+                    if node_to_check in prompt:
+                        if prompt[node_to_check]['class_type'] in save_nodes:
+                            (media_type, media_format) = get_media_info(out[:8])
+                            media_name = f'{prompt[node_to_check]["_meta"]["title"]}_{media_type}_{media_format}'
+                            images_output = output_images.get(media_name, [])
+                            if media_type=='video':
+                                images_output.append(out)
+                            else:
+                                images_output.append(out[8:])
+                            output_images[media_name] = images_output
+                        elif prompt[node_to_check]['class_type'] in preview_nodes and callback is not None:
+                            if current_step <= current_total_steps:
+                                finished_steps += 1
+                                callback(finished_steps, total_steps_known, np.array(Image.open(BytesIO(out[8:]))))
     
     output_images_type = ['_'.join(k.split('_')[-2:]) for k, v in output_images.items()]
     output_images = {k: np.array(Image.open(BytesIO(v[-1]))) if 'image' in k else v[-1] for k, v in output_images.items()}
