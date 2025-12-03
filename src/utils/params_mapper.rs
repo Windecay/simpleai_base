@@ -82,6 +82,8 @@ static FOOO2NODE_DATA: &[(&str, &str)] = &[
     ("var_number2", "easy int:var_number2:value"),
     ("var_number3", "easy float:var_number3:value"),
     ("var_number4", "easy float:var_number4:value"),
+    ("switch_option1", "easy boolean:switch_option1:value"),
+    ("switch_option2", "easy boolean:switch_option2:value"),
     ("i2i_function", "easy int:i2i_function:value"),
     ("i2i_model_type", "easy int:i2i_model_type:value"),
     ("i2i_skip_preprocessors", "easy boolean:i2i_skip_preprocessors:value"),
