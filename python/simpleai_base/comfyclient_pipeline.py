@@ -109,7 +109,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
     output_images = {}
     current_node = ''
     current_type = ''
-    preview_nodes = ['KSampler', 'KSamplerAdvanced', 'SamplerCustomAdvanced', 'TiledKSampler', 'UltimateSDUpscale', 'UltimateSDUpscaleNoUpscale', 'FramePackSampler', 'WanVideoSampler']
+    preview_nodes = ['KSampler', 'KSamplerAdvanced', 'SamplerCustomAdvanced', 'TiledKSampler', 'UltimateSDUpscale', 'UltimateSDUpscaleNoUpscale', 'FramePackSampler', 'WanVideoSampler', 'LanPaint_KSampler', 'LanPaint_SamplerCustom', 'LanPaint_KSamplerAdvanced', 'LanPaint_SamplerCustomAdvanced']
     save_nodes = ['SaveImageWebsocket', 'SaveImageWebsocketLazy', 'SaveVideoWebsocket']
     total_steps_known = total_steps
     current_step = 0
