@@ -65,8 +65,10 @@ def upload_mask(mask):
     return response.json()
 
 
-def queue_prompt(user_did, prompt, user_cert):
+def queue_prompt(user_did, prompt, user_cert, extra_data=None):
     p = {"prompt": prompt, "client_id": user_did, "user_cert": user_cert}
+    if extra_data:
+        p["extra_data"] = extra_data
     data = json.dumps(p).encode('utf-8')
     try:
         with httpx.Client(timeout=20.0) as client:
@@ -98,8 +100,8 @@ def get_history(prompt_id):
         return json.loads(response.read())
 
 
-def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=None):
-    result  = queue_prompt(user_did, prompt, user_cert)
+def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=None, extra_data=None):
+    result  = queue_prompt(user_did, prompt, user_cert, extra_data)
     if result is None or 'prompt_id' not in result:
         print(f'{utils.now_string()} [ComfyClient] Error in inference prompt: {result["error"]}, {result["node_errors"]}, user_did={user_did}')
         return None
@@ -115,6 +117,10 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
     current_step = 0
     current_total_steps = None
     finished_steps = 0
+    step_offset = 0
+    last_step_value = 0
+    last_max_val = 0
+
     while True:
         model_management.throw_exception_if_processing_interrupted()
         try:
@@ -136,42 +142,124 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                 elif current_type == 'executing':
                     break
 
+            if current_type == 'VHS_latentpreview' and 'id' in data:
+                 current_node = data['id']
+
             if current_type == 'progress':
-                current_step = data["value"]
-                current_total_steps = data["max"]
-                if total_steps is None:
-                    total_steps_known = current_total_steps
+                value = data["value"]
+                max_val = data["max"]
+
+                is_sampler_step = False
+                if 'node' in data and data['node'] is not None:
+                     current_node = data['node'] # Update current node if provided
+
+                if current_node:
+                     node_to_check = current_node
+                     if node_to_check not in prompt:
+                         parts = node_to_check.split('.')
+                         for i in range(len(parts) - 1, -1, -1):
+                             test_id = '.'.join(parts[i:])
+                             if test_id in prompt:
+                                 node_to_check = test_id
+                                 break
+                     if node_to_check in prompt:
+                         class_type = prompt[node_to_check]['class_type']
+                         if class_type in preview_nodes:
+                             is_sampler_step = True
+
+                if is_sampler_step:
+                    if value < last_step_value:
+                         step_offset += last_max_val
+
+                    last_step_value = value
+                    last_max_val = max_val
+
+                    current_step = step_offset + value
+
+                    if total_steps_known:
+                         current_total_steps = total_steps_known
+                    else:
+                         current_total_steps = step_offset + max_val
+
+                    if callback is not None:
+                        display_step = current_step
+                        display_total = current_total_steps if current_total_steps else total_steps_known
+                        try:
+                            callback(display_step, display_total, None)
+                        except Exception as e:
+                            print(f"{utils.now_string()} [ComfyClient] Error calling callback in progress: {e}")
+
         else:
             if not utils.echo_off:
                 length = len(out)
                 length = 16 if length > 16 else length
                 print(f'{utils.now_string()} [ComfyClient] feedback_stream({len(out)})={out[:length]}...')
-            if current_type == 'progress':
-                if current_node:
-                    node_to_check = current_node
-                    if node_to_check not in prompt:
-                        parts = node_to_check.split('.')
-                        for i in range(len(parts) - 1, -1, -1):
-                            test_id = '.'.join(parts[i:])
-                            if test_id in prompt:
-                                node_to_check = test_id
-                                break
+            if current_node:
+                node_to_check = current_node
+                if node_to_check not in prompt:
+                    parts = node_to_check.split('.')
+                    for i in range(len(parts) - 1, -1, -1):
+                        test_id = '.'.join(parts[i:])
+                        if test_id in prompt:
+                            node_to_check = test_id
+                            break
 
-                    if node_to_check in prompt:
-                        if prompt[node_to_check]['class_type'] in save_nodes:
-                            (media_type, media_format) = get_media_info(out[:8])
-                            media_name = f'{prompt[node_to_check]["_meta"]["title"]}_{media_type}_{media_format}'
-                            images_output = output_images.get(media_name, [])
-                            if media_type=='video':
-                                images_output.append(out)
+                if node_to_check in prompt:
+                    if prompt[node_to_check]['class_type'] in save_nodes:
+                        (media_type, media_format) = get_media_info(out[:8])
+                        media_name = f'{prompt[node_to_check]["_meta"]["title"]}_{media_type}_{media_format}'
+                        images_output = output_images.get(media_name, [])
+                        if media_type=='video':
+                            images_output.append(out)
+                        else:
+                            images_output.append(out[8:])
+                        output_images[media_name] = images_output
+                    elif callback is not None:
+                        is_vhs = current_type == 'VHS_latentpreview'
+                        if is_vhs and not utils.echo_off:
+                            print(f'{utils.now_string()} [ComfyClient] VHS Frame received: len={len(out)}, node={current_node}, step={current_step}/{current_total_steps}')
+
+                        if prompt[node_to_check]['class_type'] in preview_nodes or is_vhs:
+                            if total_steps_known and not is_vhs:
+
+                                if current_step > 0 and current_total_steps:
+                                        display_step = current_step
+                                        display_total = current_total_steps
+                                else:
+                                        finished_steps += 1
+                                        display_step = finished_steps
+                                        display_total = total_steps_known
                             else:
-                                images_output.append(out[8:])
-                            output_images[media_name] = images_output
-                        elif prompt[node_to_check]['class_type'] in preview_nodes and callback is not None:
-                            if current_step <= current_total_steps:
-                                finished_steps += 1
-                                callback(finished_steps, total_steps_known, np.array(Image.open(BytesIO(out[8:]))))
-    
+                                    # Complex logic for VHS or unknown steps
+                                if current_total_steps is None or current_step <= current_total_steps:
+                                    if current_step > 0:
+                                        display_step = current_step
+                                        display_total = current_total_steps 
+                                        if display_total is None or display_total == 0:
+                                                display_total = total_steps_known
+
+                                    else:
+                                        if not is_vhs:
+                                            finished_steps += 1
+                                        display_step = finished_steps if finished_steps > 0 else 1
+                                        display_total = total_steps_known if total_steps_known else (current_total_steps if current_total_steps else '?')
+                                else:
+                                        display_step = current_step
+                                        display_total = current_total_steps
+
+                            try:
+                                image_data = out[8:]
+                                if len(image_data) > 24 and image_data[0:2] != b'\xff\xd8' and image_data[24:26] == b'\xff\xd8':
+                                    image_data = image_data[24:]
+                                elif len(image_data) > 20 and image_data[0:2] != b'\xff\xd8' and image_data[20:22] == b'\xff\xd8':
+                                    image_data = image_data[20:]
+                                if is_vhs:
+                                    pass
+
+                                callback(display_step, display_total, np.array(Image.open(BytesIO(image_data))))
+                            except Exception as e:
+                                print(f"{utils.now_string()} [ComfyClient] Error decoding preview image: {e}")
+
     output_images_type = ['_'.join(k.split('_')[-2:]) for k, v in output_images.items()]
     output_images = {k: np.array(Image.open(BytesIO(v[-1]))) if 'image' in k else v[-1] for k, v in output_images.items()}
     print(f'{utils.now_string()} [ComfyClient] The ComfyTask:{prompt_id} has finished, get {len(output_images)} result: {output_images_type}')
@@ -202,7 +290,7 @@ def images_upload(images):
     return result
 
 
-def process_flow(user_did, flow_name, params, images, callback=None, total_steps=None, user_cert=None):
+def process_flow(user_did, flow_name, params, images, callback=None, total_steps=None, user_cert=None, extra_data=None):
     global ws, client_id
 
     if ws is None or user_did != client_id or ws.status != 101:
@@ -237,7 +325,7 @@ def process_flow(user_did, flow_name, params, images, callback=None, total_steps
         prompt_str = params.convert2comfy(flow_name)
         if not utils.echo_off:
             pass #print(f'{utils.now_string()} [ComfyClient] ComfyTask prompt: {prompt_str}')
-        images = get_images(user_did, ws, prompt_str, callback=callback, total_steps=total_steps, user_cert=user_cert)
+        images = get_images(user_did, ws, prompt_str, callback=callback, total_steps=total_steps, user_cert=user_cert, extra_data=extra_data)
         # ws.close()
     except websocket.WebSocketException as e:
         print(f'{utils.now_string()} [ComfyClient] The connect has been closed, restart and try again: {e}')
