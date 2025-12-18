@@ -120,6 +120,8 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
     step_offset = 0
     last_step_value = 0
     last_max_val = 0
+    is_vhs_active = False
+    last_valid_image = None
 
     while True:
         model_management.throw_exception_if_processing_interrupted()
@@ -130,11 +132,19 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
             ws = websocket.WebSocket()
             ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
             out = ws.recv()
+
         if isinstance(out, str):
             message = json.loads(out)
             if not utils.echo_off:
                 print(f'{utils.now_string()} [ComfyClient] feedback_message={message}')
             current_type = message['type']
+
+            if current_type == 'VHS_latentpreview':
+                length = message.get('data', {}).get('length', 1)
+                if length > 1:
+                    is_vhs_active = True
+                else:
+                    is_vhs_active = False
             data = message['data']
             if 'prompt_id' in data and data['prompt_id'] == prompt_id and 'node' in data:
                 if data['node'] is not None:
@@ -143,7 +153,8 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                     break
 
             if current_type == 'VHS_latentpreview' and 'id' in data:
-                 current_node = data['id']
+                current_node = data['id']
+
 
             if current_type == 'progress':
                 value = data["value"]
@@ -184,8 +195,12 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                     if callback is not None:
                         display_step = current_step
                         display_total = current_total_steps if current_total_steps else total_steps_known
+
                         try:
-                            callback(display_step, display_total, None)
+                            if is_vhs_active:
+                                callback(display_step, display_total, None)
+                            else:
+                                callback(display_step, display_total, last_valid_image)
                         except Exception as e:
                             print(f"{utils.now_string()} [ComfyClient] Error calling callback in progress: {e}")
 
@@ -215,7 +230,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                             images_output.append(out[8:])
                         output_images[media_name] = images_output
                     elif callback is not None:
-                        is_vhs = current_type == 'VHS_latentpreview'
+                        is_vhs = current_type == 'VHS_latentpreview' or is_vhs_active
                         if is_vhs and not utils.echo_off:
                             print(f'{utils.now_string()} [ComfyClient] VHS Frame received: len={len(out)}, node={current_node}, step={current_step}/{current_total_steps}')
 
@@ -255,8 +270,10 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                                     image_data = image_data[20:]
                                 if is_vhs:
                                     pass
-
-                                callback(display_step, display_total, np.array(Image.open(BytesIO(image_data))))
+                                last_valid_image = np.array(Image.open(BytesIO(image_data)))
+                                callback(display_step, display_total, last_valid_image)
+                                if is_vhs:
+                                    time.sleep(0.02)
                             except Exception as e:
                                 print(f"{utils.now_string()} [ComfyClient] Error decoding preview image: {e}")
 
