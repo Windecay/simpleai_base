@@ -4,6 +4,7 @@ import uuid
 import httpx
 import time
 import struct
+import os
 import numpy as np
 import ldm_patched.modules.model_management as model_management
 from io import BytesIO
@@ -283,6 +284,27 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
     return output_images
 
 
+def upload_file(file_path):
+    if not os.path.exists(file_path):
+        return None
+
+    file_ext = os.path.splitext(file_path)[1]
+    with open(file_path, 'rb') as f:
+        file_content = f.read()
+        file_hash = hashlib.sha256(file_content).hexdigest()
+
+        # Consistent naming logic with images_upload: upload_file_{hash[:32]}.{ext}
+        filename = f'upload_file_{file_hash[:32]}{file_ext}'
+
+        f.seek(0)
+        files = {'image': (filename, f)}
+        data = {'overwrite': 'true', 'type': 'input'}
+        response = httpx.post("http://{}/upload/image".format(server_address()), files=files, data=data)
+
+    if response.status_code == 200:
+        return response.json()["name"]
+    return None
+
 def images_upload(images):
     result = {}
     if images is None or images.len() == 0:
@@ -335,6 +357,20 @@ def process_flow(user_did, flow_name, params, images, callback=None, total_steps
 
     images_map = images_upload(images)
     params.update_params(images_map)
+
+    # upload video and audio files if they are local paths
+    current_params = params.get_params()
+    files_to_upload = {}
+    for key in ['video', 'audio']:
+        if key in current_params and isinstance(current_params[key], str) and os.path.exists(current_params[key]):
+            print(f'{utils.now_string()} [ComfyClient] Uploading {key}: {current_params[key]}')
+            new_filename = upload_file(current_params[key])
+            if new_filename:
+                files_to_upload[key] = new_filename
+                print(f'{utils.now_string()} [ComfyClient] Uploaded {key} as: {new_filename}')
+    if files_to_upload:
+        params.update_params(files_to_upload)
+
     print(f'{utils.now_string()} [ComfyClient] Ready ComfyTask to process: workflow={flow_name}')
     for k, v in sorted(params.get_params().items()):
         print(f'    {k} = {v}')

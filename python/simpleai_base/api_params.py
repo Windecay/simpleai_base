@@ -109,8 +109,10 @@ backend_args = [
         'hires_fix_weight',
         'hires_fix_stop',
         'tiling',
-        'tiled_offset_x'
-        'tiled_offset_y'
+        'tiled_offset_x',
+        'tiled_offset_y',
+        'video',
+        'audio'
     ]
 
 def normalization(args, default_max_lora_number, default_controlnet_image_count, default_enhance_tabs):
@@ -186,6 +188,10 @@ def convert_images(args, img2img_func):
         args[67][9] = img2img_func(args[67][9])
     if args[67][10] is not None:
         args[67][10] = img2img_func(args[67][10])
+    if args[67][26] is not None and not isinstance(args[67][26], str):
+        args[67][26] = img2img_func(args[67][26])
+    if args[67][27] is not None and not isinstance(args[67][27], str):
+        args[67][27] = img2img_func(args[67][27])
     for i in range(len(args[71])):
         if args[71][i][0] is not None:
             args[71][i][0] = img2img_func(args[71][i][0])
