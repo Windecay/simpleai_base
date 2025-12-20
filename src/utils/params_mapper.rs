@@ -86,6 +86,7 @@ static FOOO2NODE_DATA: &[(&str, &str)] = &[
     ("switch_option2", "easy boolean:switch_option2:value"),
     ("i2i_function", "easy int:i2i_function:value"),
     ("i2i_model_type", "easy int:i2i_model_type:value"),
+    ("i2i_model_type2", "easy int:i2i_model_type2:value"),
     ("i2i_skip_preprocessors", "easy boolean:i2i_skip_preprocessors:value"),
     ("i2i_ip_image1", "LoadImage:i2i_ip_image1:image;SceneInput:SceneInput:ip_image"),
     ("i2i_ip_image2", "LoadImage:i2i_ip_image2:image;SceneInput:SceneInput:ip_image1"),
@@ -174,7 +175,8 @@ static FOOO2NODE_DATA: &[(&str, &str)] = &[
     ("enhance_inpaint_strength2", "EnhanceRegionInput:EnhanceRegionInput2:inpaint_strength"),
     ("enhance_inpaint_respective_field2", "EnhanceRegionInput:EnhanceRegionInput2:inpaint_respective_field"),
     ("enhance_inpaint_erode_or_dilate2", "EnhanceRegionInput:EnhanceRegionInput2:inpaint_erode_or_dilate"),
-    
+    ("video", "VHS_LoadVideo:Load Video (Upload) 🎥🅥🅗🅢:video;LoadVideo:Load Video:file"),
+    ("audio", "LoadAudio:Load Audio:audio;VHS_LoadAudioUpload:Load Audio (Upload)🎥🅥🅗🅢:audio"),
 ];
 
 #[pymethods]

@@ -175,7 +175,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                                  break
                      if node_to_check in prompt:
                          class_type = prompt[node_to_check]['class_type']
-                         if class_type in preview_nodes:
+                         if class_type in preview_nodes and class_type not in ['UltimateSDUpscale', 'UltimateSDUpscaleNoUpscale']:
                              is_sampler_step = True
 
                 if is_sampler_step:
