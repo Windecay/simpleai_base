@@ -1371,6 +1371,7 @@ impl SimpleAI {
         //    println!("[SimpBase] 程序所需基础模型包有检测异常，未完全正确安装。请检查并正确安装后，再启动程序。");
         //    feedback_code += 2;
         //}
+        /*
         let mut sysinfo = self.get_sysinfo();
         loop {
             if sysinfo.pyhash != "Unknown" {
@@ -1397,6 +1398,7 @@ impl SimpleAI {
             println!("{} [SimpBase] 所运行程序为非官方正式版本，请正确使用开源软件，{}。", token_utils::now_string(), &pyhash_display[..16]);
             feedback_code += 4;
         }
+        */
 
         feedback_code
     }
