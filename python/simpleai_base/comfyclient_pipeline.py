@@ -121,8 +121,10 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
     step_offset = 0
     last_step_value = 0
     last_max_val = 0
-    is_vhs_active = False
+    is_vhs_active = extra_data.get('is_vhs', False) if extra_data else False
     last_valid_image = None
+    node_pass_count = {}
+    node_last_val = {}
 
     while True:
         model_management.throw_exception_if_processing_interrupted()
@@ -141,15 +143,14 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
             current_type = message['type']
 
             if current_type == 'VHS_latentpreview':
-                length = message.get('data', {}).get('length', 1)
-                if length > 1:
-                    is_vhs_active = True
-                else:
-                    is_vhs_active = False
+                pass
             data = message['data']
             if 'prompt_id' in data and data['prompt_id'] == prompt_id and 'node' in data:
                 if data['node'] is not None:
                     current_node = data['node']
+                    if current_type == 'executing':
+                        node_pass_count[current_node] = 0
+                        node_last_val[current_node] = -1
                 elif current_type == 'executing':
                     break
 
@@ -164,7 +165,10 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                 is_sampler_step = False
                 if 'node' in data and data['node'] is not None:
                      current_node = data['node'] # Update current node if provided
-
+                     last_val = node_last_val.get(current_node, -1)
+                     if value < last_val:
+                         node_pass_count[current_node] = node_pass_count.get(current_node, 0) + 1
+                     node_last_val[current_node] = value
                 if current_node:
                      node_to_check = current_node
                      if node_to_check not in prompt:
@@ -175,19 +179,32 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                                  node_to_check = test_id
                                  break
                      if node_to_check in prompt:
-                         class_type = prompt[node_to_check]['class_type']
-                         if class_type in preview_nodes and class_type not in ['UltimateSDUpscale', 'UltimateSDUpscaleNoUpscale']:
-                             is_sampler_step = True
+                        class_type = prompt[node_to_check]['class_type']
+                        if class_type in preview_nodes:
+                            is_sampler_step = True
+                            current_pass = node_pass_count.get(current_node, 0)
+
+                            if ('UltimateSDUpscale' in class_type) and current_pass == 0:
+                                is_sampler_step = False
+
+                            # Additional safety check for mismatched step counts
+                            inputs = prompt[node_to_check].get('inputs', {})
+                            if 'steps' in inputs and isinstance(inputs['steps'], int):
+                                defined_steps = inputs['steps']
+                                if max_val > defined_steps * 1.5 + 10:
+                                    is_sampler_step = False
+                            elif class_type == 'WanVideoSampler' and max_val > 300:
+                                # Fallback: if steps is not static, assume huge counts are loading operations
+                                is_sampler_step = False
 
                 if is_sampler_step:
                     if value < last_step_value:
-                         step_offset += last_max_val
+                        step_offset += last_max_val
 
                     last_step_value = value
                     last_max_val = max_val
 
                     current_step = step_offset + value
-
                     if total_steps_known:
                          current_total_steps = total_steps_known
                     else:
@@ -269,8 +286,6 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                                     image_data = image_data[24:]
                                 elif len(image_data) > 20 and image_data[0:2] != b'\xff\xd8' and image_data[20:22] == b'\xff\xd8':
                                     image_data = image_data[20:]
-                                if is_vhs:
-                                    pass
                                 last_valid_image = np.array(Image.open(BytesIO(image_data)))
                                 callback(display_step, display_total, last_valid_image)
                                 if is_vhs:

@@ -100,6 +100,11 @@ backend_args = [
         'scene_steps',
         'scene_aspect_ratio',
         'scene_var_number',
+        'scene_var_number2',
+        'scene_var_number3',
+        'scene_var_number4',
+        'scene_switch_option1',
+        'scene_switch_option2',
         'scene_image_number',
         'base_model_dtype',
         'clip_model',
@@ -112,7 +117,8 @@ backend_args = [
         'tiled_offset_x',
         'tiled_offset_y',
         'video',
-        'audio'
+        'audio',
+        'engine_type'
     ]
 
 def normalization(args, default_max_lora_number, default_controlnet_image_count, default_enhance_tabs):
