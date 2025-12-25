@@ -102,6 +102,13 @@ def get_history(prompt_id):
 
 
 def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=None, extra_data=None):
+    def format_progress(val):
+        if isinstance(val, float):
+            val = round(val, 1)
+            if val.is_integer():
+                return int(val)
+        return val
+
     result  = queue_prompt(user_did, prompt, user_cert, extra_data)
     if result is None or 'prompt_id' not in result:
         print(f'{utils.now_string()} [ComfyClient] Error in inference prompt: {result["error"]}, {result["node_errors"]}, user_did={user_did}')
@@ -211,8 +218,8 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                          current_total_steps = step_offset + max_val
 
                     if callback is not None:
-                        display_step = current_step
-                        display_total = current_total_steps if current_total_steps else total_steps_known
+                        display_step = format_progress(current_step)
+                        display_total = format_progress(current_total_steps if current_total_steps else total_steps_known)
 
                         try:
                             if is_vhs_active:
@@ -238,8 +245,8 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                             break
 
                 if node_to_check in prompt:
+                    (media_type, media_format) = get_media_info(out[:8])
                     if prompt[node_to_check]['class_type'] in save_nodes:
-                        (media_type, media_format) = get_media_info(out[:8])
                         media_name = f'{prompt[node_to_check]["_meta"]["title"]}_{media_type}_{media_format}'
                         images_output = output_images.get(media_name, [])
                         if media_type=='video':
@@ -281,13 +288,15 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                                         display_total = current_total_steps
 
                             try:
-                                image_data = out[8:]
-                                if len(image_data) > 24 and image_data[0:2] != b'\xff\xd8' and image_data[24:26] == b'\xff\xd8':
-                                    image_data = image_data[24:]
-                                elif len(image_data) > 20 and image_data[0:2] != b'\xff\xd8' and image_data[20:22] == b'\xff\xd8':
-                                    image_data = image_data[20:]
-                                last_valid_image = np.array(Image.open(BytesIO(image_data)))
-                                callback(display_step, display_total, last_valid_image)
+                                if media_type == 'image':
+                                    image_data = out[8:]
+                                    if len(image_data) > 24 and image_data[0:2] != b'\xff\xd8' and image_data[24:26] == b'\xff\xd8':
+                                        image_data = image_data[24:]
+                                    elif len(image_data) > 20 and image_data[0:2] != b'\xff\xd8' and image_data[20:22] == b'\xff\xd8':
+                                        image_data = image_data[20:]
+                                    last_valid_image = np.array(Image.open(BytesIO(image_data)))
+                                
+                                callback(format_progress(display_step), format_progress(display_total), last_valid_image)
                                 if is_vhs:
                                     time.sleep(0.02)
                             except Exception as e:
@@ -443,6 +452,8 @@ def setvars(vars):
         return
 
 def get_media_info(out):
+    if out is None or len(out) < 8:
+        return "unknown", "unknown"
     # 定义事件类型常量
     PREVIEW_IMAGE = 1
     UNENCODED_PREVIEW_IMAGE = 2
