@@ -1279,3 +1279,10 @@ pub(crate) fn now_string() -> String {
     let formatted_time = format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis);
     formatted_time
 }
+
+pub fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_millis() as u64
+}
