@@ -12,7 +12,6 @@ from PIL import Image
 import hashlib
 from . import utils
 
-
 class ComfyInputImage:
     default_image = np.zeros((1024, 1024, 3), dtype=np.uint8)
     default_image_hash = hashlib.sha256(default_image.tobytes()).hexdigest()
@@ -111,7 +110,10 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
 
     result  = queue_prompt(user_did, prompt, user_cert, extra_data)
     if result is None or 'prompt_id' not in result:
-        print(f'{utils.now_string()} [ComfyClient] Error in inference prompt: {result["error"]}, {result["node_errors"]}, user_did={user_did}')
+        if result:
+            print(f'{utils.now_string()} [ComfyClient] Error in inference prompt: {result.get("error")}, {result.get("node_errors")}, user_did={user_did}')
+        else:
+            print(f'{utils.now_string()} [ComfyClient] Error in inference prompt: Result is None (Request Failed), user_did={user_did}')
         return None
     prompt_id = result['prompt_id']
     steps_str = f', total_steps={total_steps}' if total_steps is not None else ''
@@ -137,11 +139,21 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
         model_management.throw_exception_if_processing_interrupted()
         try:
             out = ws.recv()
-        except ConnectionResetError as e:
+        except Exception as e:
             print(f'{utils.now_string()} [ComfyClient] The connect was exception, restart and try again: {e}')
-            ws = websocket.WebSocket()
-            ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
-            out = ws.recv()
+            last_err = e
+            for attempt, sleep_s in enumerate([1.0, 3.0, 6.0], start=1):
+                try:
+                    time.sleep(sleep_s)
+                    ws = websocket.WebSocket()
+                    ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
+                    out = ws.recv()
+                    last_err = None
+                    break
+                except Exception as e2:
+                    last_err = e2
+            if last_err is not None:
+                raise websocket.WebSocketException(str(last_err))
 
         if isinstance(out, str):
             message = json.loads(out)
@@ -364,19 +376,22 @@ def process_flow(user_did, flow_name, params, images, callback=None, total_steps
             ws = websocket.WebSocket()
             ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
             client_id = user_did
-        except ConnectionRefusedError as e:
+        except Exception as e:
             print(f'{utils.now_string()} [ComfyClient] The connect_to_server has failed, sleep and try again: {e}')
             time.sleep(8)
             try:
                 ws = websocket.WebSocket()
                 ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
                 client_id = user_did
-            except ConnectionRefusedError as e:
+            except Exception as e:
                 print(f'{utils.now_string()} [ComfyClient] The connect_to_server has failed, restart and try again: {e}')
                 time.sleep(12)
-                ws = websocket.WebSocket()
-                ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
-                client_id = user_did
+                try:
+                    ws = websocket.WebSocket()
+                    ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
+                    client_id = user_did
+                except Exception as e:
+                    raise
 
 
     images_map = images_upload(images)
@@ -396,7 +411,14 @@ def process_flow(user_did, flow_name, params, images, callback=None, total_steps
         params.update_params(files_to_upload)
 
     print(f'{utils.now_string()} [ComfyClient] Ready ComfyTask to process: workflow={flow_name}')
-    for k, v in sorted(params.get_params().items()):
+    current_params = params.get_params()
+    for k, v in sorted(current_params.items()):
+        if str(v) == 'placeholder.safetensors':
+            continue
+        if k.endswith('_strength'):
+            base_key = k[:-9]
+            if base_key in current_params and str(current_params[base_key]) == 'placeholder.safetensors':
+                continue
         print(f'    {k} = {v}')
     try:
         prompt_str = params.convert2comfy(flow_name)

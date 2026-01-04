@@ -15,6 +15,52 @@ pub struct TokenDB {
     trees: HashMap<String, sled::Tree>,
 }
 impl TokenDB {
+    pub fn try_open_local_db(&mut self) -> bool {
+        if !self.trees.is_empty() {
+            return true;
+        }
+        let db_path = token_utils::get_path_in_sys_key_dir("token.db");
+        let config = sled::Config::new()
+            .path(&db_path)
+            .cache_capacity(10_000)
+            .flush_every_ms(Some(1000));
+        match config.open() {
+            Ok(sled_db1) => {
+                let ready_users = sled_db1.open_tree("ready_users").unwrap();
+                let authorized = sled_db1.open_tree("authorized").unwrap();
+                let user_sessions = sled_db1.open_tree("user_sessions").unwrap();
+                let global_local_vars = sled_db1.open_tree("global_local_vars").unwrap();
+                let users = sled_db1.open_tree("user_tree").unwrap();
+                let backups = sled_db1.open_tree("backups_tree").unwrap();
+                let phones = sled_db1.open_tree("phone_tree").unwrap();
+
+                self.trees.insert("ready_users".to_string(), ready_users);
+                self.trees.insert("authorized".to_string(), authorized);
+                self.trees.insert("user_sessions".to_string(), user_sessions);
+                self.trees.insert("global_local_vars".to_string(), global_local_vars);
+                self.trees.insert("user_tree".to_string(), users);
+                self.trees.insert("backups_tree".to_string(), backups);
+                self.trees.insert("phone_tree".to_string(), phones);
+
+                *self.sled_db.write().unwrap() = Some(sled_db1);
+                println!(
+                    "{} [SimpBase] Initialize the local db: {}",
+                    token_utils::now_string(),
+                    db_path.display()
+                );
+                true
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to open token database at {}: {}",
+                    db_path.display(),
+                    e
+                );
+                false
+            }
+        }
+    }
+
     pub fn new() -> Self {
         let mut sled_db: Option<sled::Db> = None;
         let mut trees: HashMap<String, sled::Tree> = HashMap::new();
@@ -24,25 +70,36 @@ impl TokenDB {
                 .path(&db_path)
                 .cache_capacity(10_000)
                 .flush_every_ms(Some(1000));
-            let sled_db1 = config.open().expect("Failed to open token database");
-            let ready_users = sled_db1.open_tree("ready_users").unwrap();
-            let authorized = sled_db1.open_tree("authorized").unwrap();
-            let user_sessions = sled_db1.open_tree("user_sessions").unwrap();
-            let global_local_vars = sled_db1.open_tree("global_local_vars").unwrap();
-            let users = sled_db1.open_tree("user_tree").unwrap();
-            let backups = sled_db1.open_tree("backups_tree").unwrap();
-            let phones = sled_db1.open_tree("phone_tree").unwrap();
-            
-            trees.insert("ready_users".to_string(), ready_users);
-            trees.insert("authorized".to_string(), authorized);
-            trees.insert("user_sessions".to_string(), user_sessions);
-            trees.insert("global_local_vars".to_string(), global_local_vars);
-            trees.insert("user_tree".to_string(), users);
-            trees.insert("backups_tree".to_string(), backups);
-            trees.insert("phone_tree".to_string(), phones);
+            match config.open() {
+                Ok(sled_db1) => {
+                    let ready_users = sled_db1.open_tree("ready_users").unwrap();
+                    let authorized = sled_db1.open_tree("authorized").unwrap();
+                    let user_sessions = sled_db1.open_tree("user_sessions").unwrap();
+                    let global_local_vars = sled_db1.open_tree("global_local_vars").unwrap();
+                    let users = sled_db1.open_tree("user_tree").unwrap();
+                    let backups = sled_db1.open_tree("backups_tree").unwrap();
+                    let phones = sled_db1.open_tree("phone_tree").unwrap();
+                    
+                    trees.insert("ready_users".to_string(), ready_users);
+                    trees.insert("authorized".to_string(), authorized);
+                    trees.insert("user_sessions".to_string(), user_sessions);
+                    trees.insert("global_local_vars".to_string(), global_local_vars);
+                    trees.insert("user_tree".to_string(), users);
+                    trees.insert("backups_tree".to_string(), backups);
+                    trees.insert("phone_tree".to_string(), phones);
 
-            sled_db = Some(sled_db1);
-            println!("{} [SimpBase] Initialize the local db: {}", token_utils::now_string(), db_path.display());
+                    sled_db = Some(sled_db1);
+                    println!("{} [SimpBase] Initialize the local db: {}", token_utils::now_string(), db_path.display());
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to open token database at {}: {}",
+                        db_path.display(),
+                        e
+                    );
+                    let _ = api::service::wait_for_external_service(5000);
+                }
+            }
         }
         Self {
             sled_db: Arc::new(RwLock::new(sled_db)),
@@ -58,6 +115,10 @@ impl TokenDB {
         self.sled_db.write().unwrap().take();
         self.trees.clear();
         self.trees = HashMap::new();
+    }
+
+    pub fn local_db_ready(&self) -> bool {
+        !self.trees.is_empty()
     }
 
     pub fn get(&self, tree: &str, key: &str) -> String {

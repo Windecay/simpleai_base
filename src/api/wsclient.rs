@@ -24,7 +24,10 @@ use tracing::{debug, info,warn, error};
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
-use crate::{api::service::{get_ws_host, WsMessage}, utils::error::TokenError};
+use crate::{
+    api::service::{get_api_port, get_ws_host, try_takeover_rest_server, WsMessage},
+    utils::error::TokenError,
+};
 use crate::p2p::{P2pRequest, p2p_task_request, p2p_task_response};
 use crate::dids::claims::IdClaim;
 use crate::dids::TOKIO_RUNTIME;
@@ -33,13 +36,11 @@ use crate::user::shared;
 
 
 pub static WS_CLIENT: LazyLock<Arc<WsClient>> = LazyLock::new(|| {
-    let ws_url = get_ws_host();
-    Arc::new(WsClient::new(ws_url))
+    Arc::new(WsClient::new())
 });
 
 // WebSocket 客户端控制句柄
 pub struct WsClient {
-    ws_url: String,
     shutdown_sender: watch::Sender<()>,
     client_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -47,7 +48,6 @@ pub struct WsClient {
 impl Clone for WsClient {
     fn clone(&self) -> Self {
         Self {
-            ws_url: self.ws_url.clone(),
             shutdown_sender: self.shutdown_sender.clone(),
             client_task: Arc::clone(&self.client_task),
         }
@@ -55,11 +55,10 @@ impl Clone for WsClient {
 }
 
 impl WsClient {
-    pub fn new(ws_url: String) -> Self {
+    pub fn new() -> Self {
         let (shutdown_sender, _) = watch::channel(());
 
         Self {
-            ws_url,
             shutdown_sender,
             client_task: Arc::new(Mutex::new(None)),
         }
@@ -92,6 +91,7 @@ impl WsClient {
                 }
                 Err(e) => {
                     error!("Connection failed: {:?}", e);
+                    let _ = try_takeover_rest_server();
                     if let Some(delay) = backoff.next_backoff() {
                         tokio::select! {
                             _ = tokio::time::sleep(delay) => {}
@@ -112,8 +112,12 @@ impl WsClient {
     }
 
     async fn connect_and_run(self: Arc<Self>) -> Result<()> {
-        info!("Connecting to WebSocket server at {}", self.ws_url);
-        let (mut ws_stream, _) = connect_async(&self.ws_url).await?;
+        if get_api_port() == 0 {
+            let _ = try_takeover_rest_server();
+        }
+        let ws_url = get_ws_host();
+        info!("Connecting to WebSocket server at {}", ws_url);
+        let (mut ws_stream, _) = connect_async(&ws_url).await?;
         let (mut write_ws, mut read_ws) = ws_stream.split();
         let mut receiver = self.shutdown_sender.subscribe();
         

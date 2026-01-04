@@ -15,6 +15,7 @@ use warp::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use uuid::Uuid;
 use lazy_static::lazy_static;
+use std::time::{Duration, Instant};
 
 use crate::dids::{token_utils, TOKIO_RUNTIME, DidToken, REQWEST_CLIENT, REQWEST_CLIENT_SYNC};
 use crate::dids::claims::{IdClaim, GlobalClaims};
@@ -54,12 +55,105 @@ fn init_api_port() -> u16 {
     return 0;
 }
 
+pub fn refresh_api_port_if_needed() -> bool {
+    let server_handle = SERVER_HANDLE.lock().unwrap();
+    if server_handle.is_some() {
+        return true;
+    }
+    drop(server_handle);
+
+    let current_port = *API_PORT.lock().unwrap();
+    if current_port != 0 {
+        match REQWEST_CLIENT_SYNC
+            .get(format!("http://127.0.0.1:{}/api/check_sys", current_port))
+            .send()
+        {
+            Ok(resp) if resp.status().is_success() => return true,
+            _ => {
+                *API_PORT.lock().unwrap() = 0;
+            }
+        }
+    }
+
+    let port_file_path = token_utils::get_path_in_sys_key_dir("local.port");
+    if !port_file_path.exists() {
+        return false;
+    }
+
+    let port_str = std::fs::read_to_string(&port_file_path).unwrap_or("0".to_string());
+    let port = port_str.parse::<u16>().unwrap_or(0);
+    if port == 0 {
+        return false;
+    }
+
+    match REQWEST_CLIENT_SYNC
+        .get(format!("http://127.0.0.1:{}/api/check_sys", port))
+        .send()
+    {
+        Ok(resp) if resp.status().is_success() => {
+            *API_PORT.lock().unwrap() = port;
+            println!("{} [SimpBase] REST service is online.", token_utils::now_string());
+            true
+        }
+        _ => {
+            let _ = std::fs::remove_file(&port_file_path);
+            false
+        }
+    }
+}
+
+pub fn wait_for_external_service(timeout_ms: u64) -> bool {
+    let start = Instant::now();
+    let timeout = Duration::from_millis(timeout_ms);
+    while start.elapsed() < timeout {
+        if refresh_api_port_if_needed() {
+            if *API_PORT.lock().unwrap() != 0 {
+                return true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    refresh_api_port_if_needed() && *API_PORT.lock().unwrap() != 0
+}
+
+pub fn get_api_port() -> u16 {
+    let _ = refresh_api_port_if_needed();
+    *API_PORT.lock().unwrap()
+}
+
+fn try_takeover_rest_server_blocking() -> bool {
+    if get_api_port() != 0 {
+        return false;
+    }
+    {
+        let token_db = TokenDB::instance();
+        let mut token_db = token_db.write().unwrap();
+        let _ = token_db.try_open_local_db();
+        if !token_db.local_db_ready() {
+            return false;
+        }
+    }
+    start_rest_server()
+}
+
+pub fn try_takeover_rest_server() -> bool {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::spawn(|| {
+            let _ = try_takeover_rest_server_blocking();
+        });
+        return true;
+    }
+    try_takeover_rest_server_blocking()
+}
+
 pub fn get_api_host() -> String {
+    let _ = refresh_api_port_if_needed();
     let port = *API_PORT.lock().unwrap(); 
     return format!("http://127.0.0.1:{}/api", port);
 }
 
 pub fn get_ws_host() -> String {
+    let _ = refresh_api_port_if_needed();
     let port = *API_PORT.lock().unwrap();
     return format!("ws://127.0.0.1:{}/ws", port);
 }
@@ -145,7 +239,16 @@ lazy_static! {
 
 
 pub fn start_rest_server() -> bool{
+    let _ = refresh_api_port_if_needed();
     let address = Ipv4Addr::LOCALHOST;
+    {
+        let token_db = TokenDB::instance();
+        let token_db = token_db.read().unwrap();
+        if !token_db.local_db_ready() {
+            let _ = wait_for_external_service(5000);
+            return false;
+        }
+    }
     let mut port = *API_PORT.lock().unwrap();
     if port != 0 {
         info!("{} [SimpBase] REST service is already running at: http://{}:{}", token_utils::now_string(), address, port);
@@ -436,10 +539,19 @@ async fn handle_socket(
                 let connection = ws_lock.get(&connection_id).unwrap().clone();
                 drop(ws_lock);
                 if msg.is_ping() {
-                    let ping_time = u128::from_be_bytes(msg.clone().into_bytes().try_into().unwrap());
-                    let delay = tokio::time::Instant::now().elapsed().as_micros() - ping_time;
-                    
-                    println!("{} [SimpBase] WebSocket ping_delay={} with client({})", token_utils::now_string(), connection_id, delay);
+                    let now = token_utils::now_ms();
+                    let ping_bytes = msg.clone().into_bytes();
+                    if ping_bytes.len() >= 8 {
+                        let ping_time = u64::from_be_bytes(ping_bytes[..8].try_into().unwrap());
+                        let delay = now.saturating_sub(ping_time);
+                        
+                        // 仅在高延迟 (例如 > 100ms) 时打印，或者作为 debug 日志输出
+                        if delay > 100 {
+                            println!("{} [SimpBase] WebSocket HIGH ping_delay={}ms with client({})", token_utils::now_string(), delay, connection_id);
+                        } else {
+                            debug!("{} [SimpBase] WebSocket ping_delay={}ms with client({})", token_utils::now_string(), delay, connection_id);
+                        }
+                    }
                     let mut sender = connection.sender.lock().await;
                     if let Err(e) = sender.as_mut().unwrap().send(Message::pong(msg)).await {
                         error!("{} [SimpBase] 发送Pong响应时发生错误: {}",
