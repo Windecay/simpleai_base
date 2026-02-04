@@ -12,6 +12,44 @@ from PIL import Image
 import hashlib
 from . import utils
 
+def _int_like(val):
+    if isinstance(val, bool) or val is None:
+        return None
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float):
+        return int(val) if val.is_integer() else None
+    if isinstance(val, str):
+        s = val.strip()
+        if s.isdigit():
+            return int(s)
+    return None
+
+def _get_defined_steps(inputs):
+    if not isinstance(inputs, dict):
+        return None
+    for key in ("steps", "sampling_steps", "sampler_steps", "num_steps", "step_count"):
+        if key in inputs:
+            parsed = _int_like(inputs.get(key))
+            if parsed is not None and parsed > 0:
+                return parsed
+    return None
+
+def _should_count_progress_as_sampler_step(class_type, inputs, max_val, total_steps_known):
+    if class_type == 'WanVideoSampler' and max_val > 300:
+        return False
+
+    defined_steps = _get_defined_steps(inputs)
+    if defined_steps is not None:
+        if class_type == 'WanVideoSampler':
+            return not (max_val > defined_steps + 2 and max_val > defined_steps * 1.25)
+        return not (max_val > defined_steps * 1.5 + 10)
+
+    if class_type == 'WanVideoSampler' and total_steps_known is not None:
+        return not (max_val > total_steps_known + 2 and max_val > total_steps_known * 1.25)
+
+    return True
+
 class ComfyInputImage:
     default_image = np.zeros((1024, 1024, 3), dtype=np.uint8)
     default_image_hash = hashlib.sha256(default_image.tobytes()).hexdigest()
@@ -208,12 +246,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
 
                             # Additional safety check for mismatched step counts
                             inputs = prompt[node_to_check].get('inputs', {})
-                            if 'steps' in inputs and isinstance(inputs['steps'], int):
-                                defined_steps = inputs['steps']
-                                if max_val > defined_steps * 1.5 + 10:
-                                    is_sampler_step = False
-                            elif class_type == 'WanVideoSampler' and max_val > 300:
-                                # Fallback: if steps is not static, assume huge counts are loading operations
+                            if not _should_count_progress_as_sampler_step(class_type, inputs, max_val, total_steps_known):
                                 is_sampler_step = False
 
                 if is_sampler_step:
@@ -522,3 +555,9 @@ COMFYUI_ENDPOINT_PORT = '8187'
 server_address = lambda: f'{COMFYUI_ENDPOINT_IP}:{COMFYUI_ENDPOINT_PORT}'
 client_id = str(uuid.uuid4())
 ws = None
+
+if __name__ == "__main__":
+    assert _should_count_progress_as_sampler_step("WanVideoSampler", {"steps": 4}, 20, 4) is False
+    assert _should_count_progress_as_sampler_step("WanVideoSampler", {"steps": "4"}, 4, 4) is True
+    assert _should_count_progress_as_sampler_step("KSampler", {"steps": 20}, 20, None) is True
+    assert _should_count_progress_as_sampler_step("KSampler", {"steps": 4}, 20, None) is False
