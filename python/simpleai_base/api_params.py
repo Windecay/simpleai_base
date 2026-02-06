@@ -111,6 +111,8 @@ backend_args = [
         'scene_var_number10',
         'scene_switch_option1',
         'scene_switch_option2',
+        'scene_switch_option3',
+        'scene_switch_option4',
         'scene_image_number',
         'base_model_dtype',
         'clip_model',
@@ -124,6 +126,8 @@ backend_args = [
         'tiled_offset_y',
         'video',
         'audio',
+        'reference_video',
+        'mask_video',
         'engine_type'
     ]
 

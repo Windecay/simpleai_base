@@ -184,6 +184,8 @@ static FOOO2NODE_DATA: &[(&str, &str)] = &[
     ("enhance_inpaint_respective_field2", "EnhanceRegionInput:EnhanceRegionInput2:inpaint_respective_field"),
     ("enhance_inpaint_erode_or_dilate2", "EnhanceRegionInput:EnhanceRegionInput2:inpaint_erode_or_dilate"),
     ("video", "VHS_LoadVideo:Load Video (Upload) 🎥🅥🅗🅢:video;LoadVideo:Load Video:file"),
+    ("reference_video", "VHS_LoadVideo:reference_video:video;LoadVideo:reference_video:file"),
+    ("mask_video", "VHS_LoadVideo:mask_video:video;LoadVideo:mask_video:file"),
     ("audio", "LoadAudio:Load Audio:audio;VHS_LoadAudioUpload:Load Audio (Upload)🎥🅥🅗🅢:audio"),
 ];
 

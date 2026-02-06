@@ -433,7 +433,7 @@ def process_flow(user_did, flow_name, params, images, callback=None, total_steps
     # upload video and audio files if they are local paths
     current_params = params.get_params()
     files_to_upload = {}
-    for key in ['video', 'audio']:
+    for key in ['video', 'audio', 'reference_video', 'mask_video']:
         if key in current_params and isinstance(current_params[key], str) and os.path.exists(current_params[key]):
             print(f'{utils.now_string()} [ComfyClient] Uploading {key}: {current_params[key]}')
             new_filename = upload_file(current_params[key])
