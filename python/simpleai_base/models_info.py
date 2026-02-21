@@ -419,8 +419,12 @@ class ModelsInfo:
                     self.m_info.update(json.load(json_file))
                     file_no_exists_list = []
                     for k in self.m_info.keys():
-                        if self.m_info[k]['file']:
-                            model_files = self.m_info[k]['file']
+                        entry = self.m_info.get(k)
+                        if not isinstance(entry, dict):
+                            file_no_exists_list.append(k)
+                            continue
+                        model_files = entry.get('file') or []
+                        if model_files:
                             exists_file_list = []
                             for file in model_files:
                                 file = file.replace("/", os.sep)
@@ -432,11 +436,12 @@ class ModelsInfo:
                                     if file not in exists_file_list:
                                         exists_file_list.append(file)
                             if len(exists_file_list) > 0:
-                                self.m_info[k]['file'] = exists_file_list
+                                entry['file'] = exists_file_list
                             else:
                                 file_no_exists_list.append(k)
-                        if k not in file_no_exists_list and self.m_info[k]['muid']:
-                            self.update_muid_map(self.m_info[k]['muid'], k)
+                        muid = entry.get('muid') or ''
+                        if k not in file_no_exists_list and muid:
+                            self.update_muid_map(muid, k)
                     for k in file_no_exists_list:
                         del self.m_info[k]
                 #print(f'load m_info_key:{self.m_info.keys()}')
@@ -510,8 +515,15 @@ class ModelsInfo:
         url1 = '' if model_key not in self.m_info else self.m_info[model_key]['url']
         url = url1 if url is None else url
         size, hash, muid = self.calculate_model_info(model_key, file_path_list[0])
-        self.m_info.update(
-            {model_key: {'size': size, 'hash': hash, 'file': file_path_list_all, 'muid': muid, 'url': url}})
+        preserved = {}
+        existing = self.m_info.get(model_key)
+        if isinstance(existing, dict):
+            for k, v in existing.items():
+                if k not in ("size", "hash", "file", "muid", "url"):
+                    preserved[k] = v
+        entry = {'size': size, 'hash': hash, 'file': file_path_list_all, 'muid': muid, 'url': url}
+        entry.update(preserved)
+        self.m_info[model_key] = entry
         self.update_muid_map(muid, model_key)
         self.update_file_map(file_path_list_all, model_key)
 
