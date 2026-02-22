@@ -50,6 +50,7 @@ jobs:
           CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
           CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
           OPENSSL_NO_ASM: "1"
+          OPENSSL_NO_VENDOR: "1"
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist -i python3.10
