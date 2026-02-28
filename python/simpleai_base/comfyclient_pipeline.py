@@ -146,6 +146,37 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                 return int(val)
         return val
 
+    def get_effective_stage_info(node_id, max_val):
+        if node_id not in prompt:
+            return None
+        inputs = prompt[node_id].get("inputs", {})
+        start_at_step = _int_like(inputs.get("start_at_step"))
+        end_at_step = _int_like(inputs.get("end_at_step"))
+
+        effective_steps = None
+        if start_at_step is not None and end_at_step is not None and end_at_step > start_at_step:
+            effective_steps = end_at_step - start_at_step
+        else:
+            defined_steps = _get_defined_steps(inputs)
+            if defined_steps is not None and defined_steps > 0:
+                effective_steps = defined_steps
+
+        if effective_steps is None:
+            parsed_max = _int_like(max_val)
+            if parsed_max is not None and parsed_max > 0:
+                effective_steps = parsed_max
+            elif isinstance(max_val, (int, float)) and max_val > 0:
+                effective_steps = int(max_val)
+
+        if effective_steps is None or effective_steps <= 0:
+            return None
+
+        return {
+            "start_at_step": start_at_step,
+            "end_at_step": end_at_step,
+            "effective_steps": effective_steps,
+        }
+
     result  = queue_prompt(user_did, prompt, user_cert, extra_data)
     if result is None or 'prompt_id' not in result:
         if result:
@@ -165,13 +196,12 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
     current_step = 0
     current_total_steps = None
     finished_steps = 0
-    step_offset = 0
-    last_step_value = 0
-    last_max_val = 0
     is_vhs_active = extra_data.get('is_vhs', False) if extra_data else False
     last_valid_image = None
     node_pass_count = {}
     node_last_val = {}
+    sampler_stages = []
+    sampler_stage_info = {}
 
     while True:
         model_management.throw_exception_if_processing_interrupted()
@@ -220,6 +250,8 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                 max_val = data["max"]
 
                 is_sampler_step = False
+                stage_key = None
+                stage_node_id = None
                 if 'node' in data and data['node'] is not None:
                      current_node = data['node'] # Update current node if provided
                      last_val = node_last_val.get(current_node, -1)
@@ -249,18 +281,79 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                             if not _should_count_progress_as_sampler_step(class_type, inputs, max_val, total_steps_known):
                                 is_sampler_step = False
 
+                            if is_sampler_step:
+                                stage_node_id = node_to_check
+                                stage_key = (stage_node_id, current_pass)
+
                 if is_sampler_step:
-                    if value < last_step_value:
-                        step_offset += last_max_val
+                    if stage_key not in sampler_stage_info:
+                        stage_meta = get_effective_stage_info(stage_node_id, max_val)
+                        if stage_meta is None:
+                            stage_meta = {"start_at_step": None, "end_at_step": None, "effective_steps": _int_like(max_val) or 1}
 
-                    last_step_value = value
-                    last_max_val = max_val
+                        offset = 0
+                        for k in sampler_stages:
+                            offset += sampler_stage_info[k]["effective_steps"]
+                        sampler_stage_info[stage_key] = {
+                            "offset": offset,
+                            "start_at_step": stage_meta["start_at_step"],
+                            "end_at_step": stage_meta["end_at_step"],
+                            "effective_steps": stage_meta["effective_steps"],
+                            "first_value": None,
+                        }
+                        sampler_stages.append(stage_key)
 
-                    current_step = step_offset + value
+                    stage_info = sampler_stage_info[stage_key]
+                    start_at_step = stage_info.get("start_at_step")
+                    end_at_step = stage_info.get("end_at_step")
+                    effective_steps = stage_info["effective_steps"]
+
+                    value_i = value
+                    max_i = max_val
+                    parsed_value = _int_like(value)
+                    parsed_max = _int_like(max_val)
+                    if parsed_value is not None:
+                        value_i = parsed_value
+                    if parsed_max is not None:
+                        max_i = parsed_max
+
+                    if stage_info.get("first_value") is None and isinstance(value_i, int):
+                        stage_info["first_value"] = value_i
+
+                    within = None
+                    if (
+                        start_at_step is not None
+                        and end_at_step is not None
+                        and end_at_step > start_at_step
+                        and isinstance(value_i, int)
+                        and value_i >= start_at_step
+                    ):
+                        within = value_i - start_at_step + 1
+                        if within <= 0:
+                            within = None
+                    if within is None and isinstance(value_i, int):
+                        first_value = stage_info.get("first_value")
+                        if isinstance(first_value, int):
+                            within = (value_i - first_value) + 1
+                        else:
+                            within = value_i + 1
+                    if within is None:
+                        within = 1
+
+                    if within < 1:
+                        within = 1
+                    if effective_steps and within > effective_steps:
+                        within = effective_steps
+
+                    current_step = stage_info["offset"] + within
+
                     if total_steps_known:
-                         current_total_steps = total_steps_known
+                        current_total_steps = total_steps_known
                     else:
-                         current_total_steps = step_offset + max_val
+                        total_eff = 0
+                        for k in sampler_stages:
+                            total_eff += sampler_stage_info[k]["effective_steps"]
+                        current_total_steps = total_eff
 
                     if callback is not None:
                         display_step = format_progress(current_step)
