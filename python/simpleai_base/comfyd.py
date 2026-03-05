@@ -35,13 +35,20 @@ def start(args_patch=[[]], force=False):
     if not is_running():
         backend_script = os.path.join(os.getcwd(), 'comfy/main.py')
         args_comfyd = [["--preview-method", "auto"], ["--port", "8187"], ["--disable-auto-launch"]]
-        if len(args_patch) > 0 and len(args_patch[0]) > 0:
-            comfyd_args += args_patch
+        patches = []
         for patch in comfyd_args:
+            if isinstance(patch, (list, tuple)) and len(patch) > 0:
+                patches.append(list(patch))
+        if isinstance(args_patch, (list, tuple)):
+            for patch in args_patch:
+                if isinstance(patch, (list, tuple)) and len(patch) > 0:
+                    patches.append(list(patch))
+
+        for patch in patches:
             found = False
             for i, sublist in enumerate(args_comfyd):
-                if sublist[0] == patch[0]:
-                    if len(sublist) > 1:
+                if sublist and sublist[0] == patch[0]:
+                    if len(sublist) > 1 and len(patch) > 1:
                         args_comfyd[i][1] = patch[1]
                     found = True
                     break
