@@ -417,32 +417,35 @@ class ModelsInfo:
             try:
                 with open(self.info_path, "r", encoding="utf-8") as json_file:
                     self.m_info.update(json.load(json_file))
-                    file_no_exists_list = []
-                    for k in self.m_info.keys():
-                        entry = self.m_info.get(k)
+                    delete_keys = []
+                    for model_key in list(self.m_info.keys()):
+                        entry = self.m_info.get(model_key)
                         if not isinstance(entry, dict):
-                            file_no_exists_list.append(k)
+                            delete_keys.append(model_key)
                             continue
-                        model_files = entry.get('file') or []
-                        if model_files:
-                            exists_file_list = []
-                            for file in model_files:
-                                file = file.replace("/", os.sep)
-                                if os.path.exists(file):
-                                    if file in self.m_file and self.m_file[file]:
-                                        self.m_file[file].append(k)
-                                    else:
-                                        self.m_file.update({file: [k]})
-                                    if file not in exists_file_list:
-                                        exists_file_list.append(file)
-                            if len(exists_file_list) > 0:
-                                entry['file'] = exists_file_list
+
+                        model_files = entry.get("file") or []
+                        if isinstance(model_files, str):
+                            model_files = [model_files]
+                        if not isinstance(model_files, list):
+                            model_files = []
+
+                        for file_path in model_files:
+                            if not isinstance(file_path, str) or not file_path:
+                                continue
+                            file_path_os = file_path.replace("/", os.sep)
+                            if not os.path.exists(file_path_os):
+                                continue
+                            if file_path_os in self.m_file and self.m_file[file_path_os]:
+                                self.m_file[file_path_os].append(model_key)
                             else:
-                                file_no_exists_list.append(k)
-                        muid = entry.get('muid') or ''
-                        if k not in file_no_exists_list and muid:
-                            self.update_muid_map(muid, k)
-                    for k in file_no_exists_list:
+                                self.m_file.update({file_path_os: [model_key]})
+
+                        muid = entry.get("muid") or ""
+                        if muid:
+                            self.update_muid_map(muid, model_key)
+
+                    for k in delete_keys:
                         del self.m_info[k]
                 #print(f'load m_info_key:{self.m_info.keys()}')
             except Exception as e:
@@ -489,8 +492,21 @@ class ModelsInfo:
                 del_file_key.append(f)
         if not utils.echo_off:
             print(f'{utils.now_string()} [ModelInfo] del_model_key:{del_model_key}, del_file_key:{del_file_key}')
-        for f in new_model_key:
-            self.add_or_refresh_model(f, new_model_file[f])
+        for model_key, file_paths in new_model_file.items():
+            if model_key not in self.m_info:
+                self.add_or_refresh_model(model_key, file_paths)
+                continue
+            existing = self.m_info.get(model_key)
+            if not isinstance(existing, dict):
+                self.add_or_refresh_model(model_key, file_paths)
+                continue
+            existing_files = existing.get("file") or []
+            if isinstance(existing_files, str):
+                existing_files = [existing_files]
+            if not isinstance(existing_files, list):
+                existing_files = []
+            if any(fp not in existing_files for fp in file_paths):
+                self.add_or_refresh_model(model_key, file_paths)
         for f in del_model_key:
             self.remove_model(f)
         for f in del_file_key:
@@ -557,6 +573,8 @@ class ModelsInfo:
 
     def update_file_map(self, file_paths, model_key):
         for file_path in file_paths:
+            if not os.path.exists(file_path):
+                continue
             if file_path in self.m_file:
                 if model_key not in self.m_file[file_path]:
                     self.m_file[file_path].append(model_key)
@@ -680,13 +698,33 @@ class ModelsInfo:
     def get_model_filepath(self, catalog='', model_path='', muid=None):
         if muid and muid in self.m_muid:
             model_key = self.m_muid[muid][0]
-            file_paths = self.m_info[model_key]['file']
-            return file_paths[0]
+            file_paths = self.m_info[model_key].get("file") or []
+            if isinstance(file_paths, str):
+                file_paths = [file_paths]
+            if isinstance(file_paths, list):
+                for p in file_paths:
+                    if isinstance(p, str) and p and os.path.exists(p):
+                        return p
+                    if isinstance(p, str) and p and os.path.exists(p.replace("/", os.sep)):
+                        return p.replace("/", os.sep)
+                if file_paths and isinstance(file_paths[0], str):
+                    return str(file_paths[0]).replace("/", os.sep)
+            return ''
         if catalog and model_path:
             model_path = model_path.replace('\\', '/').replace(os.sep, '/')
             model_key = f'{catalog}/{model_path}'
             if model_key in self.m_info:
-                return self.m_info[model_key]['file'][0]
+                file_paths = self.m_info[model_key].get("file") or []
+                if isinstance(file_paths, str):
+                    file_paths = [file_paths]
+                if isinstance(file_paths, list):
+                    for p in file_paths:
+                        if isinstance(p, str) and p and os.path.exists(p):
+                            return p
+                        if isinstance(p, str) and p and os.path.exists(p.replace("/", os.sep)):
+                            return p.replace("/", os.sep)
+                    if file_paths and isinstance(file_paths[0], str):
+                        return str(file_paths[0]).replace("/", os.sep)
         return ''
 
     def get_model_names(self, catalog, filters=[], casesensitive=False, reverse=False):
