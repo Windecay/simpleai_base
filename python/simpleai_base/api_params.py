@@ -128,7 +128,8 @@ backend_args = [
         'audio',
         'reference_video',
         'mask_video',
-        'engine_type'
+        'engine_type',
+        'scene_loras'
     ]
 
 def normalization(args, default_max_lora_number, default_controlnet_image_count, default_enhance_tabs):

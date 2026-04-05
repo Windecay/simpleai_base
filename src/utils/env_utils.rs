@@ -97,45 +97,69 @@ pub(crate) async fn get_location() -> String {
 }
 
 pub(crate) async fn get_port_availability(ip: Ipv4Addr, port: u16) -> u16 {
-    let addr = format!("{}:{}", ip, port);
-    //println!("get_port_availability, in, addr: {addr}");
-    let real_port = match TcpListener::bind(addr) {
-        Ok(_) => port,
-        Err(_) => {
-            let mut rng = SmallRng::from_entropy();
-            loop {
-                let random_port = rng.gen_range((port-100)..=(port+100));
-                let addr = format!("{}:{}", ip, random_port);
-                match TcpListener::bind(addr) {
-                    Ok(_) => return random_port,
-                    Err(_) => {
-                        time::sleep(Duration::from_millis(10)).await;
-                        continue
-                    },
-                }
-            };
-        }
-    };
-    debug!("get_port_availability, out, port: {}", real_port);
+    let mut ip = ip;
+    let mut rng = SmallRng::from_entropy();
+    let mut attempts: u32 = 0;
+    let min_port = port.saturating_sub(100);
+    let max_port = port.saturating_add(100);
 
-    //println!("get_port_availability, out, port: {real_port}");
-    //print!(".");
-    real_port
+    loop {
+        let try_port = if attempts == 0 {
+            port
+        } else {
+            rng.gen_range(min_port..=max_port)
+        };
+
+        let addr = format!("{}:{}", ip, try_port);
+        match TcpListener::bind(addr) {
+            Ok(_) => {
+                debug!("get_port_availability, out, port: {}", try_port);
+                return try_port;
+            }
+            Err(e) => {
+                if e.kind() == ErrorKind::AddrNotAvailable && ip != Ipv4Addr::UNSPECIFIED {
+                    ip = Ipv4Addr::UNSPECIFIED;
+                    attempts = 0;
+                    continue;
+                }
+
+                attempts += 1;
+                if attempts >= 300 {
+                    debug!("get_port_availability, out, port: {}", port);
+                    return port;
+                }
+                time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    }
 }
 
 pub(crate) async fn get_random_port_availability(ip: Ipv4Addr, port: u16) -> u16 {
     let mut rng = SmallRng::from_entropy();
+    let mut ip = ip;
+    let min_port = port.saturating_sub(100);
+    let mut attempts: u32 = 0;
+
     loop {
-        let random_port = rng.gen_range((port-100)..=port);
+        let random_port = rng.gen_range(min_port..=port);
         let addr = format!("{}:{}", ip, random_port);
         match TcpListener::bind(addr) {
             Ok(_) => return random_port,
-            Err(_) => {
+            Err(e) => {
+                if e.kind() == ErrorKind::AddrNotAvailable && ip != Ipv4Addr::UNSPECIFIED {
+                    ip = Ipv4Addr::UNSPECIFIED;
+                    attempts = 0;
+                    continue;
+                }
+
+                attempts += 1;
+                if attempts >= 300 {
+                    return port;
+                }
                 time::sleep(Duration::from_millis(10)).await;
-                continue
-            },
+            }
         }
-    };
+    }
 }
 
 pub(crate) async fn get_program_hash() -> Result<(String, String), TokenError> {

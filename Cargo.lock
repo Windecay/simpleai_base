@@ -3762,7 +3762,7 @@ dependencies = [
 
 [[package]]
 name = "simpleai_base"
-version = "0.3.39"
+version = "0.3.40"
 dependencies = [
  "aes-gcm",
  "argon2",
