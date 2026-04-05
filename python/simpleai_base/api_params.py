@@ -129,6 +129,8 @@ backend_args = [
         'reference_video',
         'mask_video',
         'engine_type',
+        'scene_base_model',
+        'scene_refiner_model',
         'scene_loras'
     ]
 
