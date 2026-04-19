@@ -5,9 +5,9 @@ setup(
     version='0.3.23',
     packages=['simpleai_base'],
     install_requires=[
-        'maturin @ git+https://github.com/PyO3/maturin.git@v0.14.0',
         'cbor2',
     ],
+    python_requires='>=3.13',
     include_package_data=True,
     description='A Python package with Rust code',
     author='Your Name',
@@ -15,6 +15,7 @@ setup(
     url='https://github.com/yourusername/my_python_package',
     classifiers=[
         'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.13',
         'License :: OSI Approved :: MIT License',
         'Operating System :: OS Independent',
     ],

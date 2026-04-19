@@ -9,8 +9,8 @@ name = "simpleai_base"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies.pyo3]
-version = "0.21.2"
-# "abi3-py38" tells pyo3 (and maturin) to build using the stable ABI with minimum Python version 3.8
+# PyO3 0.22 adds support for building CPython 3.13 extension wheels.
+version = "0.22.6"
 features = ["extension-module"]
 
 
