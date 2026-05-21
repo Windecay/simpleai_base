@@ -30,6 +30,8 @@ pub struct UserAccessRecord {
     pub nickname: String,
     pub status: String,
     pub can_generate: bool,
+    #[serde(default)]
+    pub can_download_models: bool,
     pub updated_at: u64,
 }
 
@@ -316,6 +318,7 @@ impl GlobalLocalVars {
         nickname: &str,
         status: &str,
         can_generate: bool,
+        can_download_models: bool,
     ) {
         if did.is_empty() {
             return;
@@ -325,6 +328,7 @@ impl GlobalLocalVars {
             nickname: nickname.to_string(),
             status: status.to_string(),
             can_generate,
+            can_download_models,
             updated_at: Self::now_secs(),
         };
         let key = self.user_access_key(did);
@@ -373,29 +377,81 @@ impl GlobalLocalVars {
         serde_json::to_string(&result).unwrap_or_else(|_| "[]".to_string())
     }
 
+    fn get_default_user_can_generate(&self) -> bool {
+        self.get_local_admin_vars("default_user_can_generate") == "True"
+    }
+
+    fn get_default_user_can_download_models(&self) -> bool {
+        self.get_local_admin_vars("default_user_can_download_models") == "True"
+    }
+
     pub(crate) fn approve_user(&mut self, did: &str, nickname: &str, can_generate: bool) {
+        let can_download_models = self.get_default_user_can_download_models();
+        self.approve_user_with_permissions(did, nickname, can_generate, can_download_models);
+    }
+
+    pub(crate) fn approve_user_with_permissions(
+        &mut self,
+        did: &str,
+        nickname: &str,
+        can_generate: bool,
+        can_download_models: bool,
+    ) {
         self.remove_pending_did(did, "web");
         self.add_allowed_did(did, "web");
-        self.set_user_access_record(did, nickname, "allowed", can_generate);
+        self.set_user_access_record(did, nickname, "allowed", can_generate, can_download_models);
     }
 
     pub(crate) fn reject_user(&mut self, did: &str, nickname: &str) {
         self.remove_pending_did(did, "web");
         self.remove_allowed_did(did, "web");
-        self.set_user_access_record(did, nickname, "blocked", false);
+        self.set_user_access_record(did, nickname, "blocked", false, false);
     }
 
     pub(crate) fn set_user_can_generate(&mut self, did: &str, can_generate: bool) {
-        let nickname = self
-            .get_user_access_record(did)
-            .map(|record| record.nickname)
+        let record = self.get_user_access_record(did);
+        let nickname = record
+            .as_ref()
+            .map(|record| record.nickname.clone())
             .unwrap_or_default();
-        let status = if self.is_allowed_did(did, "web") {
-            "allowed"
-        } else {
-            "pending"
-        };
-        self.set_user_access_record(did, &nickname, status, can_generate);
+        let status = record
+            .as_ref()
+            .map(|record| record.status.as_str())
+            .unwrap_or_else(|| {
+                if self.is_allowed_did(did, "web") {
+                    "allowed"
+                } else {
+                    "pending"
+                }
+            });
+        let can_download_models = record
+            .as_ref()
+            .map(|record| record.can_download_models)
+            .unwrap_or_else(|| self.get_default_user_can_download_models());
+        self.set_user_access_record(did, &nickname, status, can_generate, can_download_models);
+    }
+
+    pub(crate) fn set_user_can_download_models(&mut self, did: &str, can_download_models: bool) {
+        let record = self.get_user_access_record(did);
+        let nickname = record
+            .as_ref()
+            .map(|record| record.nickname.clone())
+            .unwrap_or_default();
+        let status = record
+            .as_ref()
+            .map(|record| record.status.as_str())
+            .unwrap_or_else(|| {
+                if self.is_allowed_did(did, "web") {
+                    "allowed"
+                } else {
+                    "pending"
+                }
+            });
+        let can_generate = record
+            .as_ref()
+            .map(|record| record.can_generate)
+            .unwrap_or_else(|| self.get_default_user_can_generate());
+        self.set_user_access_record(did, &nickname, status, can_generate, can_download_models);
     }
 
     pub(crate) fn set_guest_can_generate(&mut self, can_generate: bool) {
@@ -407,6 +463,17 @@ impl GlobalLocalVars {
 
     pub(crate) fn get_guest_can_generate(&self) -> bool {
         self.get_local_admin_vars("guest_can_generate") == "True"
+    }
+
+    pub(crate) fn set_guest_can_download_models(&mut self, can_download_models: bool) {
+        self.set_local_admin_vars(
+            "guest_can_download_models",
+            if can_download_models { "True" } else { "False" },
+        );
+    }
+
+    pub(crate) fn get_guest_can_download_models(&self) -> bool {
+        self.get_local_admin_vars("guest_can_download_models") == "True"
     }
 
     pub(crate) fn can_user_generate(&self, did: &str) -> bool {
@@ -424,6 +491,23 @@ impl GlobalLocalVars {
             return record.status == "allowed" && record.can_generate;
         }
         self.is_allowed_did(did, "web")
+    }
+
+    pub(crate) fn can_user_download_models(&self, did: &str) -> bool {
+        let admin_did = self.get_admin_did();
+        if admin_did.is_empty() {
+            return true;
+        }
+        if did == admin_did {
+            return true;
+        }
+        if did == self.guest_did {
+            return self.get_guest_can_download_models();
+        }
+        if let Some(record) = self.get_user_access_record(did) {
+            return record.status == "allowed" && record.can_download_models;
+        }
+        self.is_allowed_did(did, "web") && self.get_default_user_can_download_models()
     }
 
     pub(crate) fn is_allowed_did(&self, did: &str, way: &str) -> bool {
@@ -546,7 +630,12 @@ impl AdminDefault {
         data.insert("p2p_in_did_list".to_string(), "".to_string());
         data.insert("p2p_out_did_list".to_string(), "".to_string());
         data.insert("guest_can_generate".to_string(), "False".to_string());
+        data.insert("guest_can_download_models".to_string(), "False".to_string());
         data.insert("default_user_can_generate".to_string(), "True".to_string());
+        data.insert(
+            "default_user_can_download_models".to_string(),
+            "False".to_string(),
+        );
         Self { data }
     }
     pub fn get(&self, key: &str) -> String {

@@ -43,14 +43,19 @@ def main():
         guest_outputs_after_admin = token.get_path_in_user_dir(token.get_guest_did(), "outputs")
         assert_true(os.path.normpath(guest_outputs_after_admin).split(os.sep)[-2] == "guest_user", "guest should use guest_user after Admin exists")
         assert_true(not token.can_user_generate(token.get_guest_did()), "guest generation should be disabled by default after Admin exists")
+        assert_true(not token.can_user_download_models(token.get_guest_did()), "guest model downloads should be disabled by default after Admin exists")
 
         token.check_local_user_token("MemberOne", "")
         member_context = token.set_phrase_and_get_context("MemberOne", "", "Member123")
         member_did = member_context.get_did()
         assert_true(member_did and not token.is_guest(member_did), "member identity should bind locally")
         assert_true(not token.can_user_generate(member_did), "pending member should not generate")
-        assert_true(token.approve_user(member_did, True) == "OK", "Admin approval should succeed")
+        assert_true(not token.can_user_download_models(member_did), "pending member should not download models")
+        assert_true(token.approve_user_with_permissions(member_did, True, False) == "OK", "Admin approval should succeed")
         assert_true(token.can_user_generate(member_did), "approved member should generate")
+        assert_true(not token.can_user_download_models(member_did), "approved member should not download models by default")
+        assert_true(token.set_user_can_download_models(member_did, True) == "OK", "Admin should update member model download permission")
+        assert_true(token.can_user_download_models(member_did), "member should download models after permission is enabled")
 
         print("SimpAI base local-mode smoke test OK")
     finally:

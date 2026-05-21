@@ -517,6 +517,13 @@ impl SimpleAI {
             .can_user_generate(did)
     }
 
+    pub fn can_user_download_models(&self, did: &str) -> bool {
+        self.global_local_vars
+            .read()
+            .unwrap()
+            .can_user_download_models(did)
+    }
+
     pub fn get_user_access_list(&self) -> String {
         self.global_local_vars
             .read()
@@ -543,6 +550,35 @@ impl SimpleAI {
         "OK".to_string()
     }
 
+    pub fn approve_user_with_permissions(
+        &mut self,
+        did: &str,
+        can_generate: bool,
+        can_download_models: bool,
+    ) -> String {
+        if !IdClaim::validity(did) {
+            return "Unknown".to_string();
+        }
+        let claim = self.get_claim(did);
+        if claim.is_default() {
+            return "Unknown".to_string();
+        }
+        let cert = self.didtoken.lock().unwrap().issue_local_member_cert(did);
+        if cert == "Unknown" {
+            return "Unknown".to_string();
+        }
+        self.global_local_vars
+            .write()
+            .unwrap()
+            .approve_user_with_permissions(
+                did,
+                &claim.nickname,
+                can_generate,
+                can_download_models,
+            );
+        "OK".to_string()
+    }
+
     pub fn reject_user(&mut self, did: &str) -> String {
         if !IdClaim::validity(did) {
             return "Unknown".to_string();
@@ -566,6 +602,17 @@ impl SimpleAI {
         "OK".to_string()
     }
 
+    pub fn set_user_can_download_models(&mut self, did: &str, can_download_models: bool) -> String {
+        if !IdClaim::validity(did) {
+            return "Unknown".to_string();
+        }
+        self.global_local_vars
+            .write()
+            .unwrap()
+            .set_user_can_download_models(did, can_download_models);
+        "OK".to_string()
+    }
+
     pub fn set_guest_can_generate(&mut self, can_generate: bool) -> String {
         self.global_local_vars
             .write()
@@ -574,11 +621,26 @@ impl SimpleAI {
         "OK".to_string()
     }
 
+    pub fn set_guest_can_download_models(&mut self, can_download_models: bool) -> String {
+        self.global_local_vars
+            .write()
+            .unwrap()
+            .set_guest_can_download_models(can_download_models);
+        "OK".to_string()
+    }
+
     pub fn get_guest_can_generate(&self) -> bool {
         self.global_local_vars
             .read()
             .unwrap()
             .get_guest_can_generate()
+    }
+
+    pub fn get_guest_can_download_models(&self) -> bool {
+        self.global_local_vars
+            .read()
+            .unwrap()
+            .get_guest_can_download_models()
     }
 
     pub fn migrate_local_workspace_to_admin(&self, admin_did: &str) -> String {

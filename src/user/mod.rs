@@ -326,14 +326,18 @@ impl TokenUser {
         let _ = context.signature(phrase);
 
         let admin_did_before = self.didtoken.lock().unwrap().get_admin_did();
-        if self
-            .global_local_vars
-            .read()
-            .unwrap()
-            .is_allowed_did(did, "web")
-            || did == self.get_guest_did()
-            || admin_did_before.is_empty()
-        {
+        let (is_allowed_web, is_blocked) = {
+            let global_local_vars = self.global_local_vars.read().unwrap();
+            let status = global_local_vars
+                .get_user_access_record(did)
+                .map(|record| record.status)
+                .unwrap_or_default();
+            (
+                global_local_vars.is_allowed_did(did, "web"),
+                status == "blocked",
+            )
+        };
+        if is_allowed_web || did == self.get_guest_did() || admin_did_before.is_empty() {
             context.set_pending(false);
         }
 
@@ -352,7 +356,7 @@ impl TokenUser {
                 self.global_local_vars
                     .write()
                     .unwrap()
-                    .approve_user(did, &claim.nickname, true);
+                    .approve_user_with_permissions(did, &claim.nickname, true, true);
                 let admin_did = self.didtoken.lock().unwrap().get_admin_did();
                 println!(
                     "{} [SimpBase] Set admin_did/设置系统管理 = {}",
@@ -371,7 +375,7 @@ impl TokenUser {
                     .unwrap()
                     .add_allowed_did(did, "web");
             }
-            if context.is_pending() {
+            if context.is_pending() && !is_blocked {
                 self.global_local_vars
                     .write()
                     .unwrap()
@@ -379,7 +383,7 @@ impl TokenUser {
                 self.global_local_vars
                     .write()
                     .unwrap()
-                    .set_user_access_record(did, &claim.nickname, "pending", false);
+                    .set_user_access_record(did, &claim.nickname, "pending", true, false);
             }
             context
         } else {
