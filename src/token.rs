@@ -211,9 +211,9 @@ impl SimpleAI {
     pub(crate) fn set_admin_did(&mut self, did: &str) {
         if !did.is_empty() {
             self.log_register(&did);
-            self.didtoken.lock().unwrap().set_admin_did(did);
-            self.global_local_vars.write().unwrap().set_admin_did(did);
         }
+        self.didtoken.lock().unwrap().set_admin_did(did);
+        self.global_local_vars.write().unwrap().set_admin_did(did);
     }
 
     pub fn is_admin(&self, did: &str) -> bool {

@@ -341,6 +341,7 @@ impl TokenUser {
             context.set_pending(false);
         }
 
+        let mut promoted_to_admin = false;
         if token_utils::update_user_token_to_file(&context, "add") == "Ok" {
             let admin_did = self.didtoken.lock().unwrap().get_admin_did();
             if admin_did.is_empty() && did != self.get_guest_did() {
@@ -353,6 +354,7 @@ impl TokenUser {
                 self.global_local_vars.write().unwrap().set_admin_did(did);
                 self.didtoken.lock().unwrap().issue_local_member_cert(did);
                 context.set_pending(false);
+                promoted_to_admin = true;
                 self.global_local_vars
                     .write()
                     .unwrap()
@@ -375,7 +377,7 @@ impl TokenUser {
                     .unwrap()
                     .add_allowed_did(did, "web");
             }
-            if context.is_pending() && !is_blocked {
+            if context.is_pending() && !is_blocked && !promoted_to_admin {
                 self.global_local_vars
                     .write()
                     .unwrap()
