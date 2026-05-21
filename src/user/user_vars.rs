@@ -1,10 +1,12 @@
-use std::sync::{Arc, Mutex, RwLock};
-use std::collections::HashMap;
 use chrono::format;
-use tracing::{error, warn, info, debug, trace};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{debug, error, info, trace, warn};
 use warp::filters::body::form;
 
-use crate::dids::{self, DidToken, tokendb::TokenDB};
+use crate::dids::{self, tokendb::TokenDB, DidToken};
 use crate::user::TokenUser;
 
 lazy_static::lazy_static! {
@@ -22,6 +24,15 @@ pub struct GlobalLocalVars {
     didtoken: Arc<Mutex<DidToken>>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UserAccessRecord {
+    pub did: String,
+    pub nickname: String,
+    pub status: String,
+    pub can_generate: bool,
+    pub updated_at: u64,
+}
+
 impl GlobalLocalVars {
     pub fn instance() -> Arc<RwLock<GlobalLocalVars>> {
         GLOBEL_LOCAL_VARS.clone()
@@ -31,9 +42,15 @@ impl GlobalLocalVars {
         let didtoken = DidToken::instance();
         let (sys_did, device_did, guest_did, admin_did, token_db) = {
             let didtoken = didtoken.lock().unwrap();
-            (didtoken.get_sys_did(), didtoken.get_device_did(), didtoken.get_guest_did(), didtoken.get_admin_did(), didtoken.get_token_db())
+            (
+                didtoken.get_sys_did(),
+                didtoken.get_device_did(),
+                didtoken.get_guest_did(),
+                didtoken.get_admin_did(),
+                didtoken.get_token_db(),
+            )
         };
-        
+
         Self {
             sys_did,
             device_did,
@@ -112,9 +129,12 @@ impl GlobalLocalVars {
         let (local_did, local_key) = if is_admin_var {
             (self.get_admin_did(), key.to_string())
         } else {
-            (user_did.to_string(), format!("{}_{}_{}", user_did, self.sys_did, key))
+            (
+                user_did.to_string(),
+                format!("{}_{}_{}", user_did, self.sys_did, key),
+            )
         };
-    
+
         // 2. 从存储中获取原始值
         let raw_value = match self.token_db.read() {
             Ok(guard) => guard.get("global_local_vars", &local_key),
@@ -126,22 +146,29 @@ impl GlobalLocalVars {
         // 3. 处理特殊值情况
         if raw_value == "Default" || raw_value == "Unknown" {
             return if is_admin_var {
-                let admin_key_prefix =  format!("admin_{}_", self.sys_did);
+                let admin_key_prefix = format!("admin_{}_", self.sys_did);
                 let default_key_name = key.trim_start_matches(admin_key_prefix.as_str());
-                AdminDefault::instance().read().unwrap().get(default_key_name)
+                AdminDefault::instance()
+                    .read()
+                    .unwrap()
+                    .get(default_key_name)
             } else {
                 default.to_string()
             };
         }
-    
+
         // 4. 处理管理员变量解密
         if is_admin_var {
             if local_did.is_empty() {
                 return "Unknown".to_string();
             }
-            let admin_value = self.didtoken.lock().unwrap().decrypt_by_did(&raw_value, &local_did, 0);
+            let admin_value = self
+                .didtoken
+                .lock()
+                .unwrap()
+                .decrypt_by_did(&raw_value, &local_did, 0);
             debug!("get and decode admin_value: {}", admin_value);
-            if admin_value.is_empty() || admin_value == "Unknown"{
+            if admin_value.is_empty() || admin_value == "Unknown" {
                 match self.token_db.write() {
                     Ok(guard) => guard.remove("global_local_vars", &local_key),
                     Err(e) => {
@@ -150,15 +177,18 @@ impl GlobalLocalVars {
                     }
                 };
                 let admin_default = {
-                    let admin_key_prefix =  format!("admin_{}_", self.sys_did);
+                    let admin_key_prefix = format!("admin_{}_", self.sys_did);
                     let default_key_name = key.trim_start_matches(admin_key_prefix.as_str());
-                    AdminDefault::instance().read().unwrap().get(default_key_name)
+                    AdminDefault::instance()
+                        .read()
+                        .unwrap()
+                        .get(default_key_name)
                 };
                 return admin_default;
             }
             return admin_value;
         }
-    
+
         raw_value
     }
 
@@ -177,14 +207,20 @@ impl GlobalLocalVars {
         }
         let (local_key, local_value) = if is_admin_var {
             // 管理员变量需要加密
-            let encrypted_value = self.didtoken.lock().unwrap()
-                .encrypt_for_did(&value.as_bytes(), &admin_did, 0);
+            let encrypted_value =
+                self.didtoken
+                    .lock()
+                    .unwrap()
+                    .encrypt_for_did(&value.as_bytes(), &admin_did, 0);
             let admin_key = key.trim_start_matches("admin_");
             let admin_key = format!("admin_{}_{}", self.sys_did, admin_key);
             (admin_key.to_string(), encrypted_value)
         } else {
             // 普通用户变量
-            (format!("{}_{}_{}", user_did, self.sys_did, key), value.to_string())
+            (
+                format!("{}_{}_{}", user_did, self.sys_did, key),
+                value.to_string(),
+            )
         };
         let _ = match self.token_db.write() {
             Ok(mut guard) => guard.insert("global_local_vars", &local_key, &local_value),
@@ -234,17 +270,175 @@ impl GlobalLocalVars {
             }
         };
     }
-    
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+            .as_secs()
+    }
+
+    fn list_contains(list: &str, did: &str) -> bool {
+        if did.is_empty() {
+            return false;
+        }
+        list.split(',').map(|s| s.trim()).any(|item| item == did)
+    }
+
+    fn list_add(list: &str, did: &str) -> String {
+        let mut values: Vec<String> = list
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        if !values.iter().any(|item| item == did) && !did.is_empty() {
+            values.push(did.to_string());
+        }
+        values.join(",")
+    }
+
+    fn list_remove(list: &str, did: &str) -> String {
+        list.split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty() && *s != did)
+            .collect::<Vec<&str>>()
+            .join(",")
+    }
+
+    fn user_access_key(&self, did: &str) -> String {
+        format!("user_access_{}_{}", self.sys_did, did)
+    }
+
+    pub(crate) fn set_user_access_record(
+        &mut self,
+        did: &str,
+        nickname: &str,
+        status: &str,
+        can_generate: bool,
+    ) {
+        if did.is_empty() {
+            return;
+        }
+        let record = UserAccessRecord {
+            did: did.to_string(),
+            nickname: nickname.to_string(),
+            status: status.to_string(),
+            can_generate,
+            updated_at: Self::now_secs(),
+        };
+        let key = self.user_access_key(did);
+        let value = serde_json::to_string(&record).unwrap_or_else(|_| "{}".to_string());
+        let _ = match self.token_db.write() {
+            Ok(guard) => guard.insert("global_local_vars", &key, &value),
+            Err(e) => {
+                error!("写入用户权限失败: did={}, error={:?}", did, e);
+                false
+            }
+        };
+    }
+
+    pub(crate) fn get_user_access_record(&self, did: &str) -> Option<UserAccessRecord> {
+        if did.is_empty() {
+            return None;
+        }
+        let key = self.user_access_key(did);
+        let raw_value = match self.token_db.read() {
+            Ok(guard) => guard.get("global_local_vars", &key),
+            Err(e) => {
+                error!("读取用户权限失败: did={}, error={:?}", did, e);
+                "Unknown".to_string()
+            }
+        };
+        if raw_value.is_empty() || raw_value == "Unknown" {
+            return None;
+        }
+        serde_json::from_str::<UserAccessRecord>(&raw_value).ok()
+    }
+
+    pub(crate) fn get_user_access_list(&self) -> String {
+        let prefix = format!("user_access_{}_", self.sys_did);
+        let records = match self.token_db.read() {
+            Ok(guard) => guard.scan_prefix("global_local_vars", &prefix),
+            Err(e) => {
+                error!("读取用户权限列表失败: error={:?}", e);
+                HashMap::new()
+            }
+        };
+        let mut result: Vec<UserAccessRecord> = records
+            .values()
+            .filter_map(|value| serde_json::from_str::<UserAccessRecord>(value).ok())
+            .collect();
+        result.sort_by(|a, b| a.updated_at.cmp(&b.updated_at).then(a.did.cmp(&b.did)));
+        serde_json::to_string(&result).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    pub(crate) fn approve_user(&mut self, did: &str, nickname: &str, can_generate: bool) {
+        self.remove_pending_did(did, "web");
+        self.add_allowed_did(did, "web");
+        self.set_user_access_record(did, nickname, "allowed", can_generate);
+    }
+
+    pub(crate) fn reject_user(&mut self, did: &str, nickname: &str) {
+        self.remove_pending_did(did, "web");
+        self.remove_allowed_did(did, "web");
+        self.set_user_access_record(did, nickname, "blocked", false);
+    }
+
+    pub(crate) fn set_user_can_generate(&mut self, did: &str, can_generate: bool) {
+        let nickname = self
+            .get_user_access_record(did)
+            .map(|record| record.nickname)
+            .unwrap_or_default();
+        let status = if self.is_allowed_did(did, "web") {
+            "allowed"
+        } else {
+            "pending"
+        };
+        self.set_user_access_record(did, &nickname, status, can_generate);
+    }
+
+    pub(crate) fn set_guest_can_generate(&mut self, can_generate: bool) {
+        self.set_local_admin_vars(
+            "guest_can_generate",
+            if can_generate { "True" } else { "False" },
+        );
+    }
+
+    pub(crate) fn get_guest_can_generate(&self) -> bool {
+        self.get_local_admin_vars("guest_can_generate") == "True"
+    }
+
+    pub(crate) fn can_user_generate(&self, did: &str) -> bool {
+        let admin_did = self.get_admin_did();
+        if admin_did.is_empty() {
+            return true;
+        }
+        if did == admin_did {
+            return true;
+        }
+        if did == self.guest_did {
+            return self.get_guest_can_generate();
+        }
+        if let Some(record) = self.get_user_access_record(did) {
+            return record.status == "allowed" && record.can_generate;
+        }
+        self.is_allowed_did(did, "web")
+    }
+
     pub(crate) fn is_allowed_did(&self, did: &str, way: &str) -> bool {
         if way == "web" || way == "p2p" {
-            self.get_local_admin_vars(&format!("{way}_in_did_list")).contains(did)
+            Self::list_contains(
+                &self.get_local_admin_vars(&format!("{way}_in_did_list")),
+                did,
+            )
         } else {
             false
         }
     }
 
     pub(crate) fn get_allowed_did_list(&self, way: &str) -> String {
-        if way!= "web" && way!= "p2p" {
+        if way != "web" && way != "p2p" {
             return String::new();
         }
         let list_key = format!("{way}_in_did_list");
@@ -257,17 +451,7 @@ impl GlobalLocalVars {
         }
         let list_key = format!("{way}_in_did_list");
 
-        let mut did_list = self.get_local_admin_vars(&list_key);
-        if did_list.is_empty() {
-            did_list = did.to_string();
-        } else {
-            if did_list.contains(did) {
-                return;
-            } else {
-                did_list.push_str(",");
-                did_list.push_str(did);
-            }
-        }
+        let did_list = Self::list_add(&self.get_local_admin_vars(&list_key), did);
         self.set_local_admin_vars(&list_key, &did_list);
     }
 
@@ -277,34 +461,28 @@ impl GlobalLocalVars {
         }
         let list_key = format!("{way}_in_did_list");
 
-        let mut did_list = self.get_local_admin_vars(&list_key);
+        let did_list = self.get_local_admin_vars(&list_key);
         if did_list.is_empty() {
             return;
-        } else {
-            if !did_list.contains(did) {
-                return;
-            } else {
-                let updated_list: Vec<&str> = did_list
-                    .split(',')
-                    .map(|s| s.trim())
-                    .filter(|&s| s != did && !s.is_empty())
-                    .collect();
-                let new_did_list = updated_list.join(",");
-                self.set_local_admin_vars(&list_key, &new_did_list);
-            }
+        } else if Self::list_contains(&did_list, did) {
+            let new_did_list = Self::list_remove(&did_list, did);
+            self.set_local_admin_vars(&list_key, &new_did_list);
         }
     }
 
     pub(crate) fn is_pending_did(&self, did: &str, way: &str) -> bool {
         if way == "web" || way == "p2p" {
-            self.get_local_admin_vars(&format!("{way}_pending_did_list")).contains(did)
+            Self::list_contains(
+                &self.get_local_admin_vars(&format!("{way}_pending_did_list")),
+                did,
+            )
         } else {
             false
         }
     }
 
     pub(crate) fn get_pending_did_list(&self, way: &str) -> String {
-        if way!= "web" && way!= "p2p" {
+        if way != "web" && way != "p2p" {
             return String::new();
         }
         let list_key = format!("{way}_pending_did_list");
@@ -317,17 +495,7 @@ impl GlobalLocalVars {
         }
         let list_key = format!("{way}_pending_did_list");
 
-        let mut did_list = self.get_local_admin_vars(&list_key);
-        if did_list.is_empty() {
-            did_list = did.to_string();
-        } else {
-            if did_list.contains(did) {
-                return;
-            } else {
-                did_list.push_str(",");
-                did_list.push_str(did);
-            }
-        }
+        let did_list = Self::list_add(&self.get_local_admin_vars(&list_key), did);
         self.set_local_admin_vars(&list_key, &did_list);
     }
 
@@ -337,21 +505,12 @@ impl GlobalLocalVars {
         }
         let list_key = format!("{way}_pending_did_list");
 
-        let mut did_list = self.get_local_admin_vars(&list_key);
+        let did_list = self.get_local_admin_vars(&list_key);
         if did_list.is_empty() {
             return;
-        } else {
-            if !did_list.contains(did) {
-                return;
-            } else {
-                let updated_list: Vec<&str> = did_list
-                    .split(',')
-                    .map(|s| s.trim())
-                    .filter(|&s| s != did && !s.is_empty())
-                    .collect();
-                let new_did_list = updated_list.join(",");
-                self.set_local_admin_vars(&list_key, &new_did_list);
-            }
+        } else if Self::list_contains(&did_list, did) {
+            let new_did_list = Self::list_remove(&did_list, did);
+            self.set_local_admin_vars(&list_key, &new_did_list);
         }
     }
 
@@ -359,25 +518,25 @@ impl GlobalLocalVars {
         self.remove_pending_did(did, way);
         self.add_allowed_did(did, way);
     }
-
 }
-
 
 pub struct AdminDefault {
     data: HashMap<String, String>,
 }
 impl AdminDefault {
-
     pub fn instance() -> Arc<RwLock<AdminDefault>> {
         ADMIN_DEFAULT.clone()
     }
     pub fn new() -> Self {
-        let mut data= HashMap::new();
+        let mut data = HashMap::new();
         data.insert("comfyd_active_checkbox".to_string(), "True".to_string());
         data.insert("fast_comfyd_checkbox".to_string(), "False".to_string());
         data.insert("reserved_vram".to_string(), "0".to_string());
         data.insert("vlm_checkbox".to_string(), "False".to_string());
-        data.insert("vlm_version".to_string(), "Qwen3.5-9B-abliterated-Q4_K_M".to_string());
+        data.insert(
+            "vlm_version".to_string(),
+            "Qwen3.5-9B-abliterated-Q4_K_M".to_string(),
+        );
         data.insert("advanced_logs".to_string(), "False".to_string());
         data.insert("wavespeed_strength".to_string(), "0.12".to_string());
         data.insert("translation_methods".to_string(), "Third APIs".to_string());
@@ -386,12 +545,15 @@ impl AdminDefault {
         data.insert("p2p_remote_process".to_string(), "Disable".to_string());
         data.insert("p2p_in_did_list".to_string(), "".to_string());
         data.insert("p2p_out_did_list".to_string(), "".to_string());
-        Self {
-            data,
-        }
+        data.insert("guest_can_generate".to_string(), "False".to_string());
+        data.insert("default_user_can_generate".to_string(), "True".to_string());
+        Self { data }
     }
     pub fn get(&self, key: &str) -> String {
-        self.data.get(key).unwrap_or(&"None".to_string()).to_string()
+        self.data
+            .get(key)
+            .unwrap_or(&"None".to_string())
+            .to_string()
     }
     pub fn insert(&mut self, key: String, value: String) {
         self.data.insert(key, value);

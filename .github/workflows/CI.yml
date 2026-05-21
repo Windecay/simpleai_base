@@ -44,6 +44,9 @@ jobs:
           sudo apt update
           sudo apt install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
+      - name: Cargo tests
+        run: cargo test --lib
+
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         env:
@@ -91,6 +94,9 @@ jobs:
         with:
           python-version: '3.13'
           architecture: ${{ matrix.platform.target }}
+
+      - name: Cargo tests
+        run: cargo test --lib
       
       - name: Build wheels
         uses: PyO3/maturin-action@v1
@@ -100,6 +106,12 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist -i python3.13
           sccache: 'true'
+      - name: Smoke test wheel
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem -Path dist -Filter "simpleai_base-*.whl" | Select-Object -First 1
+          python -m pip install --force-reinstall $wheel.FullName
+          python test.py
       - name: Upload wheels
         uses: actions/upload-artifact@v6
         with:
@@ -120,6 +132,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+      - name: Cargo tests
+        run: cargo test --lib
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
