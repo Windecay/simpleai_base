@@ -1,8 +1,9 @@
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
-
-from simpleai_base import simpleai_base
+import uuid
 
 
 def assert_true(condition, message):
@@ -10,9 +11,34 @@ def assert_true(condition, message):
         raise AssertionError(message)
 
 
+def run_from_isolated_script_root():
+    if os.environ.get("SIMPLEAI_BASE_SMOKE_CHILD") == "1":
+        return False
+
+    runner_dir = tempfile.mkdtemp(prefix="simpleai_base_root_")
+    runner_path = os.path.join(runner_dir, "smoke_runner.py")
+    try:
+        shutil.copyfile(__file__, runner_path)
+        env = os.environ.copy()
+        env["SIMPLEAI_BASE_SMOKE_CHILD"] = "1"
+        result = subprocess.run([sys.executable, "-s", runner_path], cwd=runner_dir, env=env)
+        if result.returncode != 0:
+            raise SystemExit(result.returncode)
+        return True
+    finally:
+        shutil.rmtree(runner_dir, ignore_errors=True)
+
+
 def main():
+    from simpleai_base import simpleai_base
+
     print("SimpAI base local-mode smoke test ...")
     userhome = tempfile.mkdtemp(prefix="simpleai_base_local_")
+    run_id = uuid.uuid4().hex[:10]
+    admin_name = f"LocalAdmin_{run_id}"
+    admin_phrase = f"Admin123_{run_id}"
+    member_name = f"MemberOne_{run_id}"
+    member_phrase = f"Member123_{run_id}"
     try:
         token = simpleai_base.init_local()
         token.set_user_base_dir(userhome)
@@ -31,7 +57,7 @@ def main():
         with open(marker, "w", encoding="utf-8") as f:
             f.write("local")
 
-        admin_context = token.set_phrase_and_get_context("LocalAdmin", "", "Admin123")
+        admin_context = token.set_phrase_and_get_context(admin_name, "", admin_phrase)
         admin_did = admin_context.get_did()
         assert_true(admin_did and not token.is_guest(admin_did), "first local identity should become Admin")
         assert_true(token.get_admin_did() == admin_did, "Admin DID should be set")
@@ -45,8 +71,8 @@ def main():
         assert_true(not token.can_user_generate(token.get_guest_did()), "guest generation should be disabled by default after Admin exists")
         assert_true(not token.can_user_download_models(token.get_guest_did()), "guest model downloads should be disabled by default after Admin exists")
 
-        token.check_local_user_token("MemberOne", "")
-        member_context = token.set_phrase_and_get_context("MemberOne", "", "Member123")
+        token.check_local_user_token(member_name, "")
+        member_context = token.set_phrase_and_get_context(member_name, "", member_phrase)
         member_did = member_context.get_did()
         assert_true(member_did and not token.is_guest(member_did), "member identity should bind locally")
         assert_true(not token.can_user_generate(member_did), "pending member should not generate")
@@ -63,4 +89,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if not run_from_isolated_script_root():
+        main()
