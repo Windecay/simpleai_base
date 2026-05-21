@@ -59,23 +59,23 @@ impl GlobalCerts {
     pub fn get_register_cert(&self, for_did: &str) -> String {
         let member_cert = self.get_member_cert(TOKEN_ENTRYPOINT_DID, for_did);
         if member_cert != "Unknown" {
-            println!("{} [CertCenter] get global register cert for did={}", token_utils::now_string(), for_did);
+            debug!("{} [CertCenter] get global register cert for did={}", token_utils::now_string(), for_did);
             return member_cert;
         }
         
         if !self.upstream_did.is_empty() {
             let member_cert = self.get_member_cert(&self.upstream_did, for_did);
             if member_cert != "Unknown" {
-                println!("{} [CertCenter] get upstream register cert for did={}", token_utils::now_string(), for_did);
+                debug!("{} [CertCenter] get upstream register cert for did={}", token_utils::now_string(), for_did);
                 return member_cert;
             }
         }
         let member_cert = self.get_member_cert(&self.sys_did, for_did);
         if member_cert != "Unknown" {
-            println!("{} [CertCenter] get local register cert for did={}", token_utils::now_string(), for_did);
+            debug!("{} [CertCenter] get local register cert for did={}", token_utils::now_string(), for_did);
             member_cert
         } else {
-            println!("{} [CertCenter] no register cert for did={}", token_utils::now_string(), for_did);
+            debug!("{} [CertCenter] no register cert for did={}", token_utils::now_string(), for_did);
             "Unknown".to_string()
         }
     }

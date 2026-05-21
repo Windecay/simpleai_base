@@ -43,7 +43,7 @@ impl TokenDB {
                 self.trees.insert("phone_tree".to_string(), phones);
 
                 *self.sled_db.write().unwrap() = Some(sled_db1);
-                println!(
+                debug!(
                     "{} [SimpBase] Initialize the local db: {}",
                     token_utils::now_string(),
                     db_path.display()
@@ -89,7 +89,7 @@ impl TokenDB {
                     trees.insert("phone_tree".to_string(), phones);
 
                     sled_db = Some(sled_db1);
-                    println!("{} [SimpBase] Initialize the local db: {}", token_utils::now_string(), db_path.display());
+                    debug!("{} [SimpBase] Initialize the local db: {}", token_utils::now_string(), db_path.display());
                 }
                 Err(e) => {
                     warn!(

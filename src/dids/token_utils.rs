@@ -106,7 +106,7 @@ impl SystemKeys {
         let (dev_hash_id, device_phrase) = get_key_hash_id_and_phrase("Device", &id_hash);
         let (sys_hash_id, system_phrase) = get_key_hash_id_and_phrase("System", &id_hash);
 
-        println!("{} [SimpBase] SystemKeys has loaded: system({system_name}, {sys_hash_id}), device({device_name}, {dev_hash_id}).", now_string());
+        debug!("{} [SimpBase] SystemKeys has loaded: system({system_name}, {sys_hash_id}), device({device_name}, {dev_hash_id}).", now_string());
         Self {
             system_key,
             device_key,

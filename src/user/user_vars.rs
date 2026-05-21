@@ -40,6 +40,38 @@ impl GlobalLocalVars {
         GLOBEL_LOCAL_VARS.clone()
     }
 
+    fn canonical_admin_key(&self, key: &str) -> String {
+        let admin_key_prefix = format!("admin_{}_", self.sys_did);
+        if key.starts_with(&admin_key_prefix) {
+            key.to_string()
+        } else {
+            let key_name = key.trim_start_matches("admin_");
+            format!("{}{}", admin_key_prefix, key_name)
+        }
+    }
+
+    fn admin_default_key_name(&self, key: &str) -> String {
+        let admin_key_prefix = format!("admin_{}_", self.sys_did);
+        let canonical_key = self.canonical_admin_key(key);
+        canonical_key
+            .trim_start_matches(admin_key_prefix.as_str())
+            .to_string()
+    }
+
+    fn legacy_double_admin_key(&self, canonical_key: &str) -> Option<String> {
+        let admin_key_prefix = format!("admin_{}_", self.sys_did);
+        if !canonical_key.starts_with(&admin_key_prefix) {
+            return None;
+        }
+        let legacy_key_name = canonical_key.trim_start_matches("admin_");
+        let legacy_key = format!("{}{}", admin_key_prefix, legacy_key_name);
+        if legacy_key == canonical_key {
+            None
+        } else {
+            Some(legacy_key)
+        }
+    }
+
     pub fn new() -> Self {
         let didtoken = DidToken::instance();
         let (sys_did, device_did, guest_did, admin_did, token_db) = {
@@ -120,7 +152,7 @@ impl GlobalLocalVars {
     }
 
     pub(crate) fn get_local_admin_vars(&self, key: &str) -> String {
-        let admin_key = format!("admin_{}_{}", self.sys_did, key);
+        let admin_key = self.canonical_admin_key(key);
         let admin_did = self.get_admin_did();
         self.get_local_vars(&admin_key, "default", &admin_did)
     }
@@ -129,7 +161,7 @@ impl GlobalLocalVars {
         // 1. 确定变量类型和键名
         let is_admin_var = key.starts_with("admin_");
         let (local_did, local_key) = if is_admin_var {
-            (self.get_admin_did(), key.to_string())
+            (self.get_admin_did(), self.canonical_admin_key(key))
         } else {
             (
                 user_did.to_string(),
@@ -138,22 +170,40 @@ impl GlobalLocalVars {
         };
 
         // 2. 从存储中获取原始值
-        let raw_value = match self.token_db.read() {
+        let mut raw_value = match self.token_db.read() {
             Ok(guard) => guard.get("global_local_vars", &local_key),
             Err(e) => {
                 error!("从存储中获取原始值: key={}, error={:?}", local_key, e);
                 "Unknown".to_string()
             }
         };
+        let mut stored_admin_key = local_key.clone();
+        if is_admin_var && (raw_value == "Default" || raw_value == "Unknown") {
+            if let Some(legacy_key) = self.legacy_double_admin_key(&local_key) {
+                let legacy_value = match self.token_db.read() {
+                    Ok(guard) => guard.get("global_local_vars", &legacy_key),
+                    Err(e) => {
+                        error!(
+                            "从存储中获取旧管理员变量失败: key={}, error={:?}",
+                            legacy_key, e
+                        );
+                        "Unknown".to_string()
+                    }
+                };
+                if legacy_value != "Default" && legacy_value != "Unknown" {
+                    raw_value = legacy_value;
+                    stored_admin_key = legacy_key;
+                }
+            }
+        }
         // 3. 处理特殊值情况
         if raw_value == "Default" || raw_value == "Unknown" {
             return if is_admin_var {
-                let admin_key_prefix = format!("admin_{}_", self.sys_did);
-                let default_key_name = key.trim_start_matches(admin_key_prefix.as_str());
+                let default_key_name = self.admin_default_key_name(key);
                 AdminDefault::instance()
                     .read()
                     .unwrap()
-                    .get(default_key_name)
+                    .get(&default_key_name)
             } else {
                 default.to_string()
             };
@@ -172,21 +222,33 @@ impl GlobalLocalVars {
             debug!("get and decode admin_value: {}", admin_value);
             if admin_value.is_empty() || admin_value == "Unknown" {
                 match self.token_db.write() {
-                    Ok(guard) => guard.remove("global_local_vars", &local_key),
+                    Ok(guard) => guard.remove("global_local_vars", &stored_admin_key),
                     Err(e) => {
                         error!("获取全局变量写锁失败: error={:?}", e);
                         false
                     }
                 };
-                let admin_default = {
-                    let admin_key_prefix = format!("admin_{}_", self.sys_did);
-                    let default_key_name = key.trim_start_matches(admin_key_prefix.as_str());
-                    AdminDefault::instance()
-                        .read()
-                        .unwrap()
-                        .get(default_key_name)
-                };
+                let default_key_name = self.admin_default_key_name(key);
+                let admin_default = AdminDefault::instance()
+                    .read()
+                    .unwrap()
+                    .get(&default_key_name);
                 return admin_default;
+            }
+            if stored_admin_key != local_key {
+                match self.token_db.write() {
+                    Ok(mut guard) => {
+                        guard.insert("global_local_vars", &local_key, &raw_value);
+                        guard.remove("global_local_vars", &stored_admin_key)
+                    }
+                    Err(e) => {
+                        error!(
+                            "迁移旧管理员变量失败: key={}, error={:?}",
+                            stored_admin_key, e
+                        );
+                        false
+                    }
+                };
             }
             return admin_value;
         }
@@ -195,7 +257,11 @@ impl GlobalLocalVars {
     }
 
     pub(crate) fn set_local_admin_vars(&mut self, key: &str, value: &str) {
-        let admin_key = format!("admin_{}_{}", self.sys_did, key);
+        let admin_key = if key.starts_with("admin_") {
+            key.to_string()
+        } else {
+            format!("admin_{}", key)
+        };
         let admin_did = self.get_admin_did();
         self.set_local_vars(&admin_key, value, &admin_did);
     }
@@ -214,9 +280,7 @@ impl GlobalLocalVars {
                     .lock()
                     .unwrap()
                     .encrypt_for_did(&value.as_bytes(), &admin_did, 0);
-            let admin_key = key.trim_start_matches("admin_");
-            let admin_key = format!("admin_{}_{}", self.sys_did, admin_key);
-            (admin_key.to_string(), encrypted_value)
+            (self.canonical_admin_key(key), encrypted_value)
         } else {
             // 普通用户变量
             (

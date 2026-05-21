@@ -267,7 +267,7 @@ impl LocalClaims {
         }
         
         (device_did, sys_did, guest) = LocalClaims::generate_sys_dev_guest_did(&mut claims, &device_did, &sys_did, &guest);        
-        println!("{} [SimpBase] Loaded claims from local: len={}", token_utils::now_string(), claims.len());
+        debug!("{} [SimpBase] Loaded claims from local: len={}", token_utils::now_string(), claims.len());
         
         LocalClaims {
             claims: claims.clone(),

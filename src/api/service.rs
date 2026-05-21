@@ -44,7 +44,7 @@ fn init_api_port() -> u16 {
         match REQWEST_CLIENT_SYNC.get(format!("http://127.0.0.1:{}/api/check_sys", port)).send() {
             Ok(resp) => {
                 if resp.status().is_success() {
-                    println!("{} [SimpBase] REST service is online.", token_utils::now_string());
+                    debug!("{} [SimpBase] REST service is online.", token_utils::now_string());
                     return port
                 }
             }
@@ -92,7 +92,7 @@ pub fn refresh_api_port_if_needed() -> bool {
     {
         Ok(resp) if resp.status().is_success() => {
             *API_PORT.lock().unwrap() = port;
-            println!("{} [SimpBase] REST service is online.", token_utils::now_string());
+            debug!("{} [SimpBase] REST service is online.", token_utils::now_string());
             true
         }
         _ => {
@@ -457,7 +457,7 @@ pub fn start_rest_server() -> bool{
                     token_utils::now_string(), port, port_file_path.display(), e);
     }
     *API_PORT.lock().unwrap() = port;
-    println!("{} [SimpBase] REST server started at: http://{}:{}", token_utils::now_string(), address, port);
+    debug!("{} [SimpBase] REST server started at: http://{}:{}", token_utils::now_string(), address, port);
     true
 }
 
