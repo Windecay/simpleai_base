@@ -131,7 +131,8 @@ backend_args = [
         'engine_type',
         'scene_base_model',
         'scene_refiner_model',
-        'scene_loras'
+        'scene_loras',
+        'simpleai_regen_manifest',
     ]
 
 def normalization(args, default_max_lora_number, default_controlnet_image_count, default_enhance_tabs):

@@ -412,6 +412,53 @@ class ModelsInfo:
     def get_stat(self):
         return len(self.m_info)
 
+    @staticmethod
+    def _as_file_list(value):
+        if isinstance(value, str):
+            return [value] if value else []
+        if isinstance(value, list):
+            return [p for p in value if isinstance(p, str) and p]
+        return []
+
+    @staticmethod
+    def _norm_abs_path(path):
+        return os.path.normcase(os.path.abspath(str(path).replace("/", os.sep)))
+
+    @classmethod
+    def _path_is_under_roots(cls, file_path, roots):
+        if not file_path or not roots:
+            return False
+        try:
+            file_path_abs = cls._norm_abs_path(file_path)
+        except Exception:
+            return False
+        for root in roots:
+            if not root:
+                continue
+            try:
+                root_abs = cls._norm_abs_path(root)
+                if os.path.commonpath([root_abs, file_path_abs]) == root_abs:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    @staticmethod
+    def _split_accessible_dirs(paths):
+        accessible = []
+        unavailable = []
+        for path in paths or []:
+            if not isinstance(path, str) or not path:
+                continue
+            try:
+                if os.path.isdir(path):
+                    accessible.append(path)
+                else:
+                    unavailable.append(path)
+            except OSError:
+                unavailable.append(path)
+        return accessible, unavailable
+
     def load_model_info(self):
         if os.path.exists(self.info_path):
             try:
@@ -461,12 +508,24 @@ class ModelsInfo:
         new_model_file = {}
         new_file_key = []
         del_file_key = []
+        unavailable_roots = []
+        scanned_catalogs = set()
+        unavailable_catalogs = set()
 
         self.scan_models_hash = scan_hash
         #print(f'refresh m_info_key:{self.m_info.keys()}')
         for path in self.path_map.keys():
             if self.path_map[path]:
-                path_filenames = self.get_path_filenames(path)
+                accessible_paths, unavailable_paths = self._split_accessible_dirs(self.path_map[path])
+                if unavailable_paths:
+                    unavailable_roots.extend(unavailable_paths)
+                    unavailable_catalogs.add(path)
+                    if not utils.echo_off:
+                        print(f'{utils.now_string()} [ModelInfo] Skip unavailable model folders for {path}: {unavailable_paths}')
+                if not accessible_paths:
+                    continue
+                scanned_catalogs.add(path)
+                path_filenames = self.get_path_filenames(path, accessible_paths)
                 #print(f'path_filenames_{path}:{path_filenames}')
                 for (p, k) in path_filenames:
                     model_key = f"{path}/{k.replace(os.sep, '/')}"
@@ -484,11 +543,20 @@ class ModelsInfo:
                         new_model_key.append(model_key)
         if not utils.echo_off:
             print(f'{utils.now_string()} [ModelInfo] new_model_key:{new_model_key}')
-        for k in self.m_info.keys():
+        for k, entry in self.m_info.items():
             if k not in new_info_key:
+                catalog = k.split('/')[0]
+                entry_files = self._as_file_list(entry.get("file") if isinstance(entry, dict) else [])
+                if entry_files:
+                    if any(self._path_is_under_roots(file_path, unavailable_roots) for file_path in entry_files):
+                        continue
+                elif catalog in unavailable_catalogs and catalog not in scanned_catalogs:
+                    continue
                 del_model_key.append(k)
         for f in self.m_file.keys():
             if f not in new_file_key:
+                if self._path_is_under_roots(f, unavailable_roots):
+                    continue
                 del_file_key.append(f)
         if not utils.echo_off:
             print(f'{utils.now_string()} [ModelInfo] del_model_key:{del_model_key}, del_file_key:{del_file_key}')
@@ -507,32 +575,39 @@ class ModelsInfo:
                 existing_files = []
             if any(fp not in existing_files for fp in file_paths):
                 self.add_or_refresh_model(model_key, file_paths)
+            else:
+                self.update_file_map(file_paths, model_key)
         for f in del_model_key:
             self.remove_model(f)
         for f in del_file_key:
             self.remove_file(f)
         self.save_model_info()
 
-    def get_path_filenames(self, path):
+    def get_path_filenames(self, path, folder_paths=None):
+        folder_paths = self.path_map[path] if folder_paths is None else folder_paths
         if path.isupper():
             path_filenames = []
-            for f_path in self.path_map[path]:
-                path_filenames += [(f_path, entry) for entry in os.listdir(f_path) if
-                                   os.path.isdir(os.path.join(f_path, entry))]
+            for f_path in folder_paths:
+                try:
+                    path_filenames += [(f_path, entry) for entry in os.listdir(f_path) if
+                                       os.path.isdir(os.path.join(f_path, entry))]
+                except OSError as e:
+                    if not utils.echo_off:
+                        print(f'{utils.now_string()} [ModelInfo] Skip unavailable model folder {f_path}: {e}')
         else:
-            path_filenames = get_model_filenames(self.path_map[path])
+            path_filenames = get_model_filenames(folder_paths)
         return path_filenames
 
     def add_or_refresh_model(self, model_key, file_path_list, url=None):
-        file_path_list_all = [] if model_key not in self.m_info else self.m_info[model_key]['file']
+        existing = self.m_info.get(model_key)
+        file_path_list_all = self._as_file_list(existing.get('file') if isinstance(existing, dict) else [])
         for file_path in file_path_list:
             if file_path not in file_path_list_all:
                 file_path_list_all.append(file_path)
-        url1 = '' if model_key not in self.m_info else self.m_info[model_key]['url']
+        url1 = existing.get('url', '') if isinstance(existing, dict) else ''
         url = url1 if url is None else url
         size, hash, muid = self.calculate_model_info(model_key, file_path_list[0])
         preserved = {}
-        existing = self.m_info.get(model_key)
         if isinstance(existing, dict):
             for k, v in existing.items():
                 if k not in ("size", "hash", "file", "muid", "url"):
@@ -544,10 +619,13 @@ class ModelsInfo:
         self.update_file_map(file_path_list_all, model_key)
 
     def remove_model(self, model_key):
-        if self.m_info[model_key]['muid'] and self.m_info[model_key]['muid'] in self.m_muid:
-            self.remove_muid_map(self.m_info[model_key]['muid'], model_key)
-        if self.m_info[model_key]['file']:
-            self.remove_file_map(self.m_info[model_key]['file'], model_key)
+        entry = self.m_info.get(model_key) or {}
+        muid = entry.get('muid') if isinstance(entry, dict) else ''
+        file_paths = self._as_file_list(entry.get('file') if isinstance(entry, dict) else [])
+        if muid and muid in self.m_muid:
+            self.remove_muid_map(muid, model_key)
+        if file_paths:
+            self.remove_file_map(file_paths, model_key)
         del self.m_info[model_key]
 
     def remove_file(self, file_path):
@@ -556,10 +634,12 @@ class ModelsInfo:
                 cata = model_key.split('/')[0]
                 if cata.isupper():
                     continue
-                if model_key in self.m_info and self.m_info[model_key]['file']:
-                    if file_path in self.m_info[model_key]['file']:
-                        self.m_info[model_key]['file'].remove(file_path)
-                    if len(self.m_info[model_key]['file']) == 0:
+                if model_key in self.m_info:
+                    file_paths = self._as_file_list(self.m_info[model_key].get('file'))
+                    if file_path in file_paths:
+                        file_paths.remove(file_path)
+                        self.m_info[model_key]['file'] = file_paths
+                    if len(file_paths) == 0:
                         self.remove_model(model_key)
             del self.m_file[file_path]
 
@@ -847,7 +927,11 @@ def get_model_filenames(folder_paths, extensions=None, name_filter=None, variati
         extensions = ['.pth', '.ckpt', '.bin', '.safetensors', '.patch', '.gguf', '.pt', '.onnx']
     files = []
     for folder in folder_paths:
-        files += get_files_from_folder(folder, extensions, name_filter, variation)
+        try:
+            files += get_files_from_folder(folder, extensions, name_filter, variation)
+        except (OSError, ValueError) as e:
+            if not utils.echo_off:
+                print(f'{utils.now_string()} [ModelInfo] Skip unavailable model folder {folder}: {e}')
     return files
 
 

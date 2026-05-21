@@ -360,10 +360,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                         display_total = format_progress(current_total_steps if current_total_steps else total_steps_known)
 
                         try:
-                            if is_vhs_active:
-                                callback(display_step, display_total, None)
-                            else:
-                                callback(display_step, display_total, last_valid_image)
+                            callback(display_step, display_total, None)
                         except Exception as e:
                             print(f"{utils.now_string()} [ComfyClient] Error calling callback in progress: {e}")
 

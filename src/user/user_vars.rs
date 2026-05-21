@@ -376,7 +376,8 @@ impl AdminDefault {
         data.insert("comfyd_active_checkbox".to_string(), "True".to_string());
         data.insert("fast_comfyd_checkbox".to_string(), "False".to_string());
         data.insert("reserved_vram".to_string(), "0".to_string());
-        data.insert("minicpm_checkbox".to_string(), "False".to_string());
+        data.insert("vlm_checkbox".to_string(), "False".to_string());
+        data.insert("vlm_version".to_string(), "Qwen3.5-9B-abliterated-Q4_K_M".to_string());
         data.insert("advanced_logs".to_string(), "False".to_string());
         data.insert("wavespeed_strength".to_string(), "0.12".to_string());
         data.insert("translation_methods".to_string(), "Third APIs".to_string());
