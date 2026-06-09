@@ -96,42 +96,57 @@ pub(crate) async fn get_location() -> String {
     }
 }
 
-pub(crate) async fn get_port_availability(ip: Ipv4Addr, port: u16) -> u16 {
-    let mut ip = ip;
-    let mut rng = SmallRng::from_entropy();
-    let mut attempts: u32 = 0;
-    let min_port = port.saturating_sub(100);
-    let max_port = port.saturating_add(100);
-
-    loop {
-        let try_port = if attempts == 0 {
-            port
-        } else {
-            rng.gen_range(min_port..=max_port)
-        };
-
-        let addr = format!("{}:{}", ip, try_port);
-        match TcpListener::bind(addr) {
-            Ok(_) => {
-                debug!("get_port_availability, out, port: {}", try_port);
-                return try_port;
+fn can_bind_port(ip: &mut Ipv4Addr, port: u16) -> bool {
+    let addr = SocketAddr::new(IpAddr::V4(*ip), port);
+    match TcpListener::bind(addr) {
+        Ok(_) => true,
+        Err(e) => {
+            if e.kind() == ErrorKind::AddrNotAvailable && *ip != Ipv4Addr::UNSPECIFIED {
+                *ip = Ipv4Addr::UNSPECIFIED;
+                let addr = SocketAddr::new(IpAddr::V4(*ip), port);
+                return TcpListener::bind(addr).is_ok();
             }
-            Err(e) => {
-                if e.kind() == ErrorKind::AddrNotAvailable && ip != Ipv4Addr::UNSPECIFIED {
-                    ip = Ipv4Addr::UNSPECIFIED;
-                    attempts = 0;
-                    continue;
-                }
-
-                attempts += 1;
-                if attempts >= 300 {
-                    debug!("get_port_availability, out, port: {}", port);
-                    return port;
-                }
-                time::sleep(Duration::from_millis(10)).await;
+            if e.kind() == ErrorKind::PermissionDenied {
+                debug!("port {} is denied by OS policy, trying another port", port);
             }
+            false
         }
     }
+}
+
+pub(crate) async fn find_port_availability(ip: Ipv4Addr, port: u16) -> Option<u16> {
+    let mut ip = ip;
+    let mut rng = SmallRng::from_entropy();
+
+    if can_bind_port(&mut ip, port) {
+        debug!("get_port_availability, out, port: {}", port);
+        return Some(port);
+    }
+
+    for try_port in port.saturating_add(1)..=port.saturating_add(2000) {
+        if can_bind_port(&mut ip, try_port) {
+            debug!("get_port_availability, out, port: {}", try_port);
+            return Some(try_port);
+        }
+        if try_port % 64 == 0 {
+            time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    for _ in 0..300 {
+        let try_port = rng.gen_range(10000..=65535);
+        if can_bind_port(&mut ip, try_port) {
+            debug!("get_port_availability, out, port: {}", try_port);
+            return Some(try_port);
+        }
+    }
+
+    debug!("get_port_availability, no available port from base: {}", port);
+    None
+}
+
+pub(crate) async fn get_port_availability(ip: Ipv4Addr, port: u16) -> u16 {
+    find_port_availability(ip, port).await.unwrap_or(port)
 }
 
 pub(crate) async fn get_random_port_availability(ip: Ipv4Addr, port: u16) -> u16 {

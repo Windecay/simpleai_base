@@ -254,9 +254,15 @@ pub fn start_rest_server() -> bool{
         info!("{} [SimpBase] REST service is already running at: http://{}:{}", token_utils::now_string(), address, port);
         return false;
     }
-    port =  TOKIO_RUNTIME.block_on(async move {
-        env_utils::get_port_availability(address, 4515).await
-    });
+    port = match TOKIO_RUNTIME.block_on(async move {
+        env_utils::find_port_availability(address, 4515).await
+    }) {
+        Some(port) => port,
+        None => {
+            error!("{} [SimpBase] REST service could not find an available local port.", token_utils::now_string());
+            return false;
+        }
+    };
 
     let server = TOKIO_RUNTIME.spawn(async move {
         let check_sys = warp::path!("api" / "check_sys")
@@ -436,7 +442,7 @@ pub fn start_rest_server() -> bool{
             ;
 
         let routes = routes_rest.or(routes_ws);
-        warp::serve(routes).run((address, port)).await;
+        warp::serve(routes).try_bind((address, port)).await;
 
         println!("{} [SimpBase] REST server at http://{}:{} has shut down.", 
                  token_utils::now_string(), address, port);
@@ -1311,42 +1317,12 @@ async fn handle_p2p_mgr(
     action: String,
 ) -> Result<impl Reply, Rejection> {
     debug!("handle_p2p_mgr: {}", action);
-    let mut p2p_server = p2p::get_instance().await;
-    if p2p_server.is_none() && action == "turn_on" {
-        match p2p::P2pServer::start().await {
-            Ok(_p2p) => {
-                debug!("P2P server started successfully");
-                p2p_server= Some(_p2p);
-            }
-            Err(e) => {
-                error!("Failed to start P2P server: {}", e);
-            }
-        }
-    }
-    if p2p_server.is_some() && (action == "status" || action == "turn_on" || action == "turn_off") {
-        let res = p2p_server.as_ref().unwrap().get_node_status().await;
-        if action == "turn_off" {
-            p2p::P2pServer::stop().await;
-            debug!("P2P server stopped successfully");
-        }
-        let p2p_status = P2pStatus {
-            node_id: res.local_peer_id.clone(),
-            node_did: res.local_node_did.clone(),
-            is_debug: res.is_debug,
-        };
-        let p2p_status = serde_json::to_string(&p2p_status).unwrap_or("".to_string());
-        Ok(warp::reply::json(&ApiResponse {
-            success:!res.local_peer_id.is_empty(),
-            data: p2p_status,
-            error: None,
-        }))
-    } else {
-        Ok(warp::reply::json(&ApiResponse {
-            success: false,
-            data: "".to_string(),
-            error: Some("P2P Server is not running or failed to start".to_string()),
-        }))
-    }
+    let p2p_status = serde_json::to_string(&P2pStatus::default()).unwrap_or("".to_string());
+    Ok(warp::reply::json(&ApiResponse {
+        success: false,
+        data: p2p_status,
+        error: Some("P2P disabled in local mode".to_string()),
+    }))
 }
 
 #[derive(Debug, Deserialize)]

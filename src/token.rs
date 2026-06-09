@@ -68,8 +68,10 @@ pub struct SimpleAI {
 impl SimpleAI {
     #[new]
     pub fn new() -> Self {
+        let env_filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
         let _ = tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::from_default_env())
+            .with_env_filter(env_filter)
             .try_init();
         //println!("This is test version for some case, not release version!");
         let (system_name, sys_phrase, device_name, device_phrase, guest_name, guest_phrase) =

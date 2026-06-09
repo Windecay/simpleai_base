@@ -93,7 +93,7 @@ impl SystemBaseInfo {
                 match fs::metadata(&abs_path) {
                     Ok(metadata) => {
                         if metadata.is_file() {
-                            tracing::info!("输入为文件路径，提取所在目录");
+                            tracing::debug!("输入为文件路径，提取所在目录");
                             abs_path.parent().map(|p| p.to_path_buf())
                         } else {
                             Some(abs_path)
