@@ -96,6 +96,8 @@ backend_args = [
         'scene_canvas_mask',
         'scene_input_image1',
         'scene_input_image2',
+        'scene_input_image3',
+        'scene_input_image4',
         'scene_additional_prompt',
         'scene_steps',
         'scene_aspect_ratio',
@@ -208,10 +210,14 @@ def convert_images(args, img2img_func):
         args[67][9] = img2img_func(args[67][9])
     if args[67][10] is not None:
         args[67][10] = img2img_func(args[67][10])
-    if args[67][26] is not None and not isinstance(args[67][26], str):
-        args[67][26] = img2img_func(args[67][26])
-    if args[67][27] is not None and not isinstance(args[67][27], str):
-        args[67][27] = img2img_func(args[67][27])
+    if args[67][11] is not None:
+        args[67][11] = img2img_func(args[67][11])
+    if args[67][12] is not None:
+        args[67][12] = img2img_func(args[67][12])
+    if args[67][28] is not None and not isinstance(args[67][28], str):
+        args[67][28] = img2img_func(args[67][28])
+    if args[67][29] is not None and not isinstance(args[67][29], str):
+        args[67][29] = img2img_func(args[67][29])
     for i in range(len(args[71])):
         if args[71][i][0] is not None:
             args[71][i][0] = img2img_func(args[71][i][0])
