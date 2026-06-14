@@ -138,7 +138,7 @@ def get_history(prompt_id):
         return json.loads(response.read())
 
 
-def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=None, extra_data=None):
+def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=None, extra_data=None, prompt_accepted_callback=None):
     def format_progress(val):
         if isinstance(val, float):
             val = round(val, 1)
@@ -187,6 +187,11 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
     prompt_id = result['prompt_id']
     steps_str = f', total_steps={total_steps}' if total_steps is not None else ''
     print('{} [ComfyClient] Request and get prompt_id:{}{}'.format(utils.now_string(), prompt_id, steps_str))
+    if prompt_accepted_callback is not None:
+        try:
+            prompt_accepted_callback(prompt_id, result)
+        except Exception as e:
+            print(f"{utils.now_string()} [ComfyClient] Error calling prompt_accepted_callback: {e}")
     output_images = {}
     current_node = ''
     current_type = ''
@@ -423,13 +428,14 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                                         display_total = current_total_steps
 
                             try:
-                                if media_type == 'image':
-                                    image_data = out[8:]
-                                    if len(image_data) > 24 and image_data[0:2] != b'\xff\xd8' and image_data[24:26] == b'\xff\xd8':
-                                        image_data = image_data[24:]
-                                    elif len(image_data) > 20 and image_data[0:2] != b'\xff\xd8' and image_data[20:22] == b'\xff\xd8':
-                                        image_data = image_data[20:]
-                                    last_valid_image = np.array(Image.open(BytesIO(image_data)))
+                                if media_type != 'image':
+                                    continue
+                                image_data = out[8:]
+                                if len(image_data) > 24 and image_data[0:2] != b'\xff\xd8' and image_data[24:26] == b'\xff\xd8':
+                                    image_data = image_data[24:]
+                                elif len(image_data) > 20 and image_data[0:2] != b'\xff\xd8' and image_data[20:22] == b'\xff\xd8':
+                                    image_data = image_data[20:]
+                                last_valid_image = np.array(Image.open(BytesIO(image_data)))
                                 
                                 callback(format_progress(display_step), format_progress(display_total), last_valid_image)
                                 if is_vhs:
@@ -488,7 +494,7 @@ def images_upload(images):
     return result
 
 
-def process_flow(user_did, flow_name, params, images, callback=None, total_steps=None, user_cert=None, extra_data=None):
+def process_flow(user_did, flow_name, params, images, callback=None, total_steps=None, user_cert=None, extra_data=None, prompt_accepted_callback=None):
     global ws, client_id
 
     if ws is None or user_did != client_id or ws.status != 101:
@@ -547,7 +553,7 @@ def process_flow(user_did, flow_name, params, images, callback=None, total_steps
         prompt_str = params.convert2comfy(flow_name)
         if not utils.echo_off:
             pass #print(f'{utils.now_string()} [ComfyClient] ComfyTask prompt: {prompt_str}')
-        images = get_images(user_did, ws, prompt_str, callback=callback, total_steps=total_steps, user_cert=user_cert, extra_data=extra_data)
+        images = get_images(user_did, ws, prompt_str, callback=callback, total_steps=total_steps, user_cert=user_cert, extra_data=extra_data, prompt_accepted_callback=prompt_accepted_callback)
         # ws.close()
     except websocket.WebSocketException as e:
         print(f'{utils.now_string()} [ComfyClient] The connect has been closed, restart and try again: {e}')
