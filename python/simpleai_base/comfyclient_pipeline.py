@@ -208,28 +208,36 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
     sampler_stages = []
     sampler_stage_info = {}
 
+    def reconnect_websocket(reason):
+        print(f'{utils.now_string()} [ComfyClient] websocket read interrupted, reconnect and continue prompt_id={prompt_id}: {reason}')
+        last_err = None
+        for attempt, sleep_s in enumerate([1.0, 3.0, 6.0], start=1):
+            try:
+                time.sleep(sleep_s)
+                new_ws = websocket.WebSocket()
+                new_ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
+                return new_ws
+            except Exception as e2:
+                last_err = e2
+        raise websocket.WebSocketException(str(last_err))
+
     while True:
         model_management.throw_exception_if_processing_interrupted()
         try:
             out = ws.recv()
         except Exception as e:
-            print(f'{utils.now_string()} [ComfyClient] The connect was exception, restart and try again: {e}')
-            last_err = e
-            for attempt, sleep_s in enumerate([1.0, 3.0, 6.0], start=1):
-                try:
-                    time.sleep(sleep_s)
-                    ws = websocket.WebSocket()
-                    ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
-                    out = ws.recv()
-                    last_err = None
-                    break
-                except Exception as e2:
-                    last_err = e2
-            if last_err is not None:
-                raise websocket.WebSocketException(str(last_err))
+            ws = reconnect_websocket(str(e))
+            continue
 
         if isinstance(out, str):
-            message = json.loads(out)
+            if out == "":
+                ws = reconnect_websocket("empty text frame")
+                continue
+            try:
+                message = json.loads(out)
+            except json.JSONDecodeError as e:
+                print(f'{utils.now_string()} [ComfyClient] Skip non-json websocket text for prompt_id={prompt_id}: {repr(out[:200])}, error={e}')
+                continue
             if not utils.echo_off:
                 print(f'{utils.now_string()} [ComfyClient] feedback_message={message}')
             current_type = message['type']
