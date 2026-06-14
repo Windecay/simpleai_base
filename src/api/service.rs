@@ -549,13 +549,19 @@ async fn handle_socket(
                     let ping_bytes = msg.clone().into_bytes();
                     if ping_bytes.len() >= 8 {
                         let ping_time = u64::from_be_bytes(ping_bytes[..8].try_into().unwrap());
-                        let delay = now.saturating_sub(ping_time);
-                        
-                        // 仅在高延迟 (例如 > 100ms) 时打印，或者作为 debug 日志输出
-                        if delay > 100 {
-                            println!("{} [SimpBase] WebSocket HIGH ping_delay={}ms with client({})", token_utils::now_string(), delay, connection_id);
-                        } else {
-                            debug!("{} [SimpBase] WebSocket ping_delay={}ms with client({})", token_utils::now_string(), delay, connection_id);
+                        const HIGH_PING_DELAY_MS: u64 = 100;
+                        const MAX_REASONABLE_PING_DELAY_MS: u64 = 60_000;
+
+                        if ping_time != 0 && ping_time <= now {
+                            let delay = now - ping_time;
+
+                            if delay <= MAX_REASONABLE_PING_DELAY_MS {
+                                if delay > HIGH_PING_DELAY_MS {
+                                    println!("{} [SimpBase] WebSocket HIGH ping_delay={}ms with client({})", token_utils::now_string(), delay, connection_id);
+                                } else {
+                                    debug!("{} [SimpBase] WebSocket ping_delay={}ms with client({})", token_utils::now_string(), delay, connection_id);
+                                }
+                            }
                         }
                     }
                     let mut sender = connection.sender.lock().await;

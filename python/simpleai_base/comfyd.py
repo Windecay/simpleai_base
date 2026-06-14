@@ -1,6 +1,7 @@
 import subprocess
 import os
 import sys
+import site
 import torch
 import gc
 import time
@@ -11,6 +12,66 @@ from simpleai_base.simpleai_base import gen_entry_point_id
 comfyd_process = None
 comfyd_active = False
 comfyd_args = [[]]
+
+
+def _normalized_path(path):
+    if not path:
+        return None
+    try:
+        return os.path.normcase(os.path.abspath(path))
+    except Exception:
+        return os.path.normcase(str(path))
+
+
+def _user_site_paths():
+    paths = []
+    try:
+        user_sites = site.getusersitepackages()
+        if isinstance(user_sites, str):
+            paths.append(user_sites)
+        else:
+            paths.extend(user_sites)
+    except Exception:
+        pass
+    for attr in ("USER_SITE", "USER_BASE"):
+        value = getattr(site, attr, None)
+        if value:
+            paths.append(value)
+    return {normalized for normalized in (_normalized_path(path) for path in paths) if normalized}
+
+
+def _is_user_site_path(path, user_sites):
+    normalized = _normalized_path(path)
+    if not normalized:
+        return False
+    for user_site in user_sites:
+        if normalized == user_site or normalized.startswith(user_site + os.sep):
+            return True
+    return False
+
+
+def _filtered_pythonpath():
+    user_sites = _user_site_paths()
+    result = []
+    seen = set()
+    for path in sys.path:
+        if not path or _is_user_site_path(path, user_sites):
+            continue
+        normalized = _normalized_path(path)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(path)
+    return result
+
+
+def _build_process_env():
+    process_env = os.environ.copy()
+    process_env["PYTHONNOUSERSITE"] = "1"
+    process_env["PIP_USER"] = "0"
+    process_env.pop("PYTHONUSERBASE", None)
+    process_env["PYTHONPATH"] = os.pathsep.join(_filtered_pythonpath())
+    return process_env
 
 
 def is_running():
@@ -55,8 +116,7 @@ def start(args_patch=[[]], force=False):
             if not found:
                 args_comfyd.append(patch)
         arguments = [arg for sublist in args_comfyd for arg in sublist]
-        process_env = os.environ.copy()
-        process_env["PYTHONPATH"] = os.pathsep.join(sys.path)
+        process_env = _build_process_env()
         model_management.unload_all_models()
         gc.collect()
         torch.cuda.empty_cache()
@@ -64,7 +124,7 @@ def start(args_patch=[[]], force=False):
             print(f'{utils.now_string()} [Comfyd] Ready to start with arguments: {arguments}, env: {process_env}')
         if 'comfyd_process' not in globals():
             globals()['comfyd_process'] = None
-        comfyd_process = subprocess.Popen([sys.executable, backend_script] + arguments, env=process_env)
+        comfyd_process = subprocess.Popen([sys.executable, "-s", backend_script] + arguments, env=process_env)
         comfyclient_pipeline.COMFYUI_ENDPOINT_PORT = [arg[1] for arg in args_comfyd if arg[0] == "--port"][0]
         comfyclient_pipeline.ws = None
 

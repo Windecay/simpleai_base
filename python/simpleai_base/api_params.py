@@ -118,6 +118,7 @@ backend_args = [
         'scene_image_number',
         'base_model_dtype',
         'clip_model',
+        'upscale_model',
         'llms_model',
         'display_step',
         'hires_fix_blurred',
