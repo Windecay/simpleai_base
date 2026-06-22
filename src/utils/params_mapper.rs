@@ -85,6 +85,7 @@ static FOOO2NODE_DATA: &[(&str, &str)] = &[
     ("light_editor_path", "SplineEditor:ic_light_editor:points_store"),
     ("wavespeed_strength", "easy float:wavespeed_strength:value;GeneralInput:GeneralInput:wavespeed_strength"),
     ("save_final_enhanced_image_only", "GeneralInput:GeneralInput:save_final_enhanced_image_only"), 
+    ("video_duration", "SceneInput:SceneInput:video_duration"),
     ("var_number", "easy int:var_number:value;SceneInput:SceneInput:var_number"),
     ("var_number2", "easy int:var_number2:value;SceneInput:SceneInput:var_number2"),
     ("var_number3", "easy float:var_number3:value;SceneInput:SceneInput:var_number3"),
