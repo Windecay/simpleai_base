@@ -12,6 +12,34 @@ from PIL import Image
 import hashlib
 from . import utils
 
+COMFYUI_INPUT_DIRECTORY = None
+
+def set_input_directory(input_dir):
+    global COMFYUI_INPUT_DIRECTORY
+    if input_dir:
+        COMFYUI_INPUT_DIRECTORY = os.path.abspath(str(input_dir))
+    else:
+        COMFYUI_INPUT_DIRECTORY = None
+
+def _input_file_is_available(filename, expected_size):
+    if not COMFYUI_INPUT_DIRECTORY:
+        return False
+    try:
+        input_dir = os.path.abspath(COMFYUI_INPUT_DIRECTORY)
+        target_path = os.path.abspath(os.path.join(input_dir, filename))
+        if os.path.commonpath((input_dir, target_path)) != input_dir:
+            return False
+        return os.path.isfile(target_path) and os.path.getsize(target_path) == expected_size
+    except Exception:
+        return False
+
+def _hash_file(file_path):
+    file_hash = hashlib.sha256()
+    with open(file_path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            file_hash.update(chunk)
+    return file_hash.hexdigest()
+
 def _int_like(val):
     if isinstance(val, bool) or val is None:
         return None
@@ -23,6 +51,12 @@ def _int_like(val):
         s = val.strip()
         if s.isdigit():
             return int(s)
+        try:
+            parsed = float(s)
+            if parsed.is_integer():
+                return int(parsed)
+        except ValueError:
+            pass
     return None
 
 def _get_defined_steps(inputs):
@@ -36,17 +70,25 @@ def _get_defined_steps(inputs):
     return None
 
 def _should_count_progress_as_sampler_step(class_type, inputs, max_val, total_steps_known):
-    if class_type == 'WanVideoSampler' and max_val > 300:
+    max_i = _int_like(max_val)
+    if max_i is None:
+        return True
+
+    if class_type == 'WanVideoSampler' and max_i > 300:
         return False
 
     defined_steps = _get_defined_steps(inputs)
     if defined_steps is not None:
         if class_type == 'WanVideoSampler':
-            return not (max_val > defined_steps + 2 and max_val > defined_steps * 1.25)
-        return not (max_val > defined_steps * 1.5 + 10)
+            return not (max_i > defined_steps + 2 and max_i > defined_steps * 1.25)
+        return not (max_i > defined_steps * 1.5 + 10)
 
-    if class_type == 'WanVideoSampler' and total_steps_known is not None:
-        return not (max_val > total_steps_known + 2 and max_val > total_steps_known * 1.25)
+    total_steps_i = _int_like(total_steps_known)
+    if total_steps_i is not None and total_steps_i > 0:
+        return not (max_i > total_steps_i + 2 and max_i > total_steps_i * 1.25)
+
+    if max_i > 300:
+        return False
 
     return True
 
@@ -153,6 +195,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
         start_at_step = _int_like(inputs.get("start_at_step"))
         end_at_step = _int_like(inputs.get("end_at_step"))
 
+        total_steps_i = _int_like(total_steps_known)
         effective_steps = None
         if start_at_step is not None and end_at_step is not None and end_at_step > start_at_step:
             effective_steps = end_at_step - start_at_step
@@ -167,6 +210,10 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                 effective_steps = parsed_max
             elif isinstance(max_val, (int, float)) and max_val > 0:
                 effective_steps = int(max_val)
+
+        if total_steps_i is not None and total_steps_i > 0:
+            if effective_steps is None or effective_steps > total_steps_i:
+                effective_steps = total_steps_i
 
         if effective_steps is None or effective_steps <= 0:
             return None
@@ -408,7 +455,15 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                             print(f'{utils.now_string()} [ComfyClient] VHS Frame received: len={len(out)}, node={current_node}, step={current_step}/{current_total_steps}')
 
                         if prompt[node_to_check]['class_type'] in preview_nodes or is_vhs:
-                            if total_steps_known and not is_vhs:
+                            total_steps_i = _int_like(total_steps_known)
+                            if is_vhs and total_steps_i is not None and total_steps_i > 0:
+                                current_step_i = _int_like(current_step)
+                                display_total = total_steps_i
+                                if current_step_i is not None and current_step_i > 0:
+                                    display_step = min(current_step_i, total_steps_i)
+                                else:
+                                    display_step = 1
+                            elif total_steps_known and not is_vhs:
 
                                 if current_step > 0 and current_total_steps:
                                         display_step = current_step
@@ -462,14 +517,15 @@ def upload_file(file_path):
         return None
 
     file_ext = os.path.splitext(file_path)[1]
+    file_size = os.path.getsize(file_path)
+    file_hash = _hash_file(file_path)
+    filename = f'upload_file_{file_hash[:32]}{file_ext}'
+
+    if _input_file_is_available(filename, file_size):
+        print(f'{utils.now_string()} [ComfyClient] Reuse existing input file: {filename}')
+        return filename
+
     with open(file_path, 'rb') as f:
-        file_content = f.read()
-        file_hash = hashlib.sha256(file_content).hexdigest()
-
-        # Consistent naming logic with images_upload: upload_file_{hash[:32]}.{ext}
-        filename = f'upload_file_{file_hash[:32]}{file_ext}'
-
-        f.seek(0)
         files = {'image': (filename, f)}
         data = {'overwrite': 'true', 'type': 'input'}
         response = httpx.post("http://{}/upload/image".format(server_address()), files=files, data=data)
@@ -487,13 +543,17 @@ def images_upload(images):
         if filename is None:
             np_image = images.get(k)
             pil_image = Image.fromarray(np_image)
+            filename2 = f'upload_image_{images.get_image_hash(k)[:32]}.png'
             with BytesIO() as output:
                 pil_image.save(output, format="PNG")
                 output.seek(0)
-                files = {'image': (f'upload_image_{images.get_image_hash(k)[:32]}.png', output)}
-                data = {'overwrite': 'true', 'type': 'input'}
-                response = httpx.post("http://{}/upload/image".format(server_address()), files=files, data=data)
-            filename2 = response.json()["name"]
+                if _input_file_is_available(filename2, output.getbuffer().nbytes):
+                    print(f'{utils.now_string()} [ComfyClient] Reuse existing input image: {filename2}')
+                else:
+                    files = {'image': (filename2, output)}
+                    data = {'overwrite': 'true', 'type': 'input'}
+                    response = httpx.post("http://{}/upload/image".format(server_address()), files=files, data=data)
+                    filename2 = response.json()["name"]
             images.set_image_filename(k, filename2)
             result.update({k: filename2})
             print(f'{utils.now_string()} [ComfyClient] The ComfyTask:upload_input_image, {k}: {result[k]}')
@@ -665,3 +725,5 @@ if __name__ == "__main__":
     assert _should_count_progress_as_sampler_step("WanVideoSampler", {"steps": "4"}, 4, 4) is True
     assert _should_count_progress_as_sampler_step("KSampler", {"steps": 20}, 20, None) is True
     assert _should_count_progress_as_sampler_step("KSampler", {"steps": 4}, 20, None) is False
+    assert _should_count_progress_as_sampler_step("SamplerCustomAdvanced", {}, 10002, 20) is False
+    assert _should_count_progress_as_sampler_step("SamplerCustomAdvanced", {}, 10002, None) is False
