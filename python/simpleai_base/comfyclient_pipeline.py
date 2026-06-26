@@ -14,6 +14,38 @@ from . import utils
 
 COMFYUI_INPUT_DIRECTORY = None
 
+PREVIEW_NODE_CLASS_TYPES = {
+    'KSampler',
+    'KSamplerAdvanced',
+    'SamplerCustomAdvanced',
+    'TiledKSampler',
+    'UltimateSDUpscale',
+    'UltimateSDUpscaleNoUpscale',
+    'FramePackSampler',
+    'WanVideoSampler',
+    'SCAIL2ScheduledLongVideo',
+    'SCAIL2ScheduledLongVideoWithSAM',
+    'LanPaint_KSampler',
+    'LanPaint_SamplerCustom',
+    'LanPaint_KSamplerAdvanced',
+    'LanPaint_SamplerCustomAdvanced',
+}
+
+MULTI_PASS_PREVIEW_NODE_CLASS_TYPES = {
+    'KSampler',
+    'KSamplerAdvanced',
+    'SamplerCustomAdvanced',
+    'WanVideoSampler',
+    'SCAIL2ScheduledLongVideo',
+    'SCAIL2ScheduledLongVideoWithSAM',
+}
+
+SAVE_NODE_CLASS_TYPES = {
+    'SaveImageWebsocket',
+    'SaveImageWebsocketLazy',
+    'SaveVideoWebsocket',
+}
+
 def set_input_directory(input_dir):
     global COMFYUI_INPUT_DIRECTORY
     if input_dir:
@@ -91,6 +123,43 @@ def _should_count_progress_as_sampler_step(class_type, inputs, max_val, total_st
         return False
 
     return True
+
+def _should_use_dynamic_stage_total(class_type):
+    return class_type in MULTI_PASS_PREVIEW_NODE_CLASS_TYPES
+
+def _normalize_display_progress(step, total, last_step, last_total):
+    step_i = _int_like(step)
+    total_i = _int_like(total)
+    last_step_i = _int_like(last_step)
+    last_total_i = _int_like(last_total)
+
+    if (
+        total_i is not None
+        and last_total_i is not None
+        and total_i < last_total_i
+    ):
+        return last_step, last_total
+
+    if (
+        total_i is None
+        and last_total_i is not None
+        and step_i is not None
+        and last_step_i is not None
+        and step_i <= last_step_i
+    ):
+        return last_step, last_total
+
+    if (
+        step_i is not None
+        and last_step_i is not None
+        and total_i is not None
+        and last_total_i is not None
+        and total_i == last_total_i
+        and step_i < last_step_i
+    ):
+        return last_step, last_total
+
+    return step, total
 
 class ComfyInputImage:
     default_image = np.zeros((1024, 1024, 3), dtype=np.uint8)
@@ -242,11 +311,13 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
     output_images = {}
     current_node = ''
     current_type = ''
-    preview_nodes = ['KSampler', 'KSamplerAdvanced', 'SamplerCustomAdvanced', 'TiledKSampler', 'UltimateSDUpscale', 'UltimateSDUpscaleNoUpscale', 'FramePackSampler', 'WanVideoSampler', 'LanPaint_KSampler', 'LanPaint_SamplerCustom', 'LanPaint_KSamplerAdvanced', 'LanPaint_SamplerCustomAdvanced']
-    save_nodes = ['SaveImageWebsocket', 'SaveImageWebsocketLazy', 'SaveVideoWebsocket']
+    preview_nodes = PREVIEW_NODE_CLASS_TYPES
+    save_nodes = SAVE_NODE_CLASS_TYPES
     total_steps_known = total_steps
     current_step = 0
     current_total_steps = None
+    last_display_step = None
+    last_display_total = None
     finished_steps = 0
     is_vhs_active = extra_data.get('is_vhs', False) if extra_data else False
     last_valid_image = None
@@ -254,6 +325,25 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
     node_last_val = {}
     sampler_stages = []
     sampler_stage_info = {}
+
+    def emit_progress(step, total, image=None, context="progress"):
+        nonlocal last_display_step, last_display_total
+        if callback is None:
+            return
+        display_step = format_progress(step)
+        display_total = format_progress(total)
+        display_step, display_total = _normalize_display_progress(
+            display_step,
+            display_total,
+            last_display_step,
+            last_display_total,
+        )
+        last_display_step = display_step
+        last_display_total = display_total
+        try:
+            callback(display_step, display_total, image)
+        except Exception as e:
+            print(f"{utils.now_string()} [ComfyClient] Error calling callback in {context}: {e}")
 
     def reconnect_websocket(reason):
         print(f'{utils.now_string()} [ComfyClient] websocket read interrupted, reconnect and continue prompt_id={prompt_id}: {reason}')
@@ -407,7 +497,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
 
                     current_step = stage_info["offset"] + within
 
-                    if total_steps_known:
+                    if total_steps_known and not _should_use_dynamic_stage_total(class_type):
                         current_total_steps = total_steps_known
                     else:
                         total_eff = 0
@@ -416,13 +506,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                         current_total_steps = total_eff
 
                     if callback is not None:
-                        display_step = format_progress(current_step)
-                        display_total = format_progress(current_total_steps if current_total_steps else total_steps_known)
-
-                        try:
-                            callback(display_step, display_total, None)
-                        except Exception as e:
-                            print(f"{utils.now_string()} [ComfyClient] Error calling callback in progress: {e}")
+                        emit_progress(current_step, current_total_steps if current_total_steps else total_steps_known, None, "progress")
 
         else:
             if not utils.echo_off:
@@ -454,7 +538,8 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                         if is_vhs and not utils.echo_off:
                             print(f'{utils.now_string()} [ComfyClient] VHS Frame received: len={len(out)}, node={current_node}, step={current_step}/{current_total_steps}')
 
-                        if prompt[node_to_check]['class_type'] in preview_nodes or is_vhs:
+                        class_type = prompt[node_to_check]['class_type']
+                        if class_type in preview_nodes or is_vhs:
                             total_steps_i = _int_like(total_steps_known)
                             if is_vhs and total_steps_i is not None and total_steps_i > 0:
                                 current_step_i = _int_like(current_step)
@@ -463,7 +548,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                                     display_step = min(current_step_i, total_steps_i)
                                 else:
                                     display_step = 1
-                            elif total_steps_known and not is_vhs:
+                            elif total_steps_known and not is_vhs and not _should_use_dynamic_stage_total(class_type):
 
                                 if current_step > 0 and current_total_steps:
                                         display_step = current_step
@@ -500,7 +585,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                                     image_data = image_data[20:]
                                 last_valid_image = np.array(Image.open(BytesIO(image_data)))
                                 
-                                callback(format_progress(display_step), format_progress(display_total), last_valid_image)
+                                emit_progress(display_step, display_total, last_valid_image, "preview image")
                                 if is_vhs:
                                     time.sleep(0.02)
                             except Exception as e:
@@ -721,6 +806,14 @@ client_id = str(uuid.uuid4())
 ws = None
 
 if __name__ == "__main__":
+    assert "KSampler" in MULTI_PASS_PREVIEW_NODE_CLASS_TYPES
+    assert "WanVideoSampler" in MULTI_PASS_PREVIEW_NODE_CLASS_TYPES
+    assert "SCAIL2ScheduledLongVideo" in PREVIEW_NODE_CLASS_TYPES
+    assert "SCAIL2ScheduledLongVideoWithSAM" in PREVIEW_NODE_CLASS_TYPES
+    assert "SCAIL2ScheduledLongVideoWithSAM" in MULTI_PASS_PREVIEW_NODE_CLASS_TYPES
+    assert _normalize_display_progress(6, 6, 7, 12) == (7, 12)
+    assert _normalize_display_progress(6, None, 7, 12) == (7, 12)
+    assert _normalize_display_progress(8, 12, 7, 12) == (8, 12)
     assert _should_count_progress_as_sampler_step("WanVideoSampler", {"steps": 4}, 20, 4) is False
     assert _should_count_progress_as_sampler_step("WanVideoSampler", {"steps": "4"}, 4, 4) is True
     assert _should_count_progress_as_sampler_step("KSampler", {"steps": 20}, 20, None) is True
