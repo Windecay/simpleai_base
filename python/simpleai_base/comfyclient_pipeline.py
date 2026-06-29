@@ -13,6 +13,7 @@ import hashlib
 from . import utils
 
 COMFYUI_INPUT_DIRECTORY = None
+COMFYUI_WEBSOCKET_TIMEOUT = 10.0
 
 PREVIEW_NODE_CLASS_TYPES = {
     'KSampler',
@@ -71,6 +72,12 @@ def _hash_file(file_path):
         for chunk in iter(lambda: f.read(1024 * 1024), b''):
             file_hash.update(chunk)
     return file_hash.hexdigest()
+
+def connect_websocket(user_did):
+    new_ws = websocket.WebSocket()
+    new_ws.settimeout(COMFYUI_WEBSOCKET_TIMEOUT)
+    new_ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
+    return new_ws
 
 def _int_like(val):
     if isinstance(val, bool) or val is None:
@@ -244,9 +251,44 @@ def get_image(filename, subfolder, folder_type):
 
 
 def get_history(prompt_id):
-    with httpx.Client() as client:
+    with httpx.Client(timeout=20.0) as client:
         response = client.get("http://{}/history/{}".format(server_address(), prompt_id))
         return json.loads(response.read())
+
+
+def get_history_item(prompt_id):
+    try:
+        history = get_history(prompt_id)
+    except Exception as e:
+        print(f'{utils.now_string()} [ComfyClient] history check failed prompt_id={prompt_id}: {e}')
+        return None
+
+    if not isinstance(history, dict):
+        return None
+
+    item = history.get(prompt_id)
+    if isinstance(item, dict):
+        return item
+
+    if isinstance(history.get("outputs"), dict) or isinstance(history.get("status"), dict):
+        return history
+
+    return None
+
+
+def prompt_finished_in_history(prompt_id, context):
+    history_item = get_history_item(prompt_id)
+    if history_item is None:
+        return False
+
+    status = history_item.get("status")
+    if isinstance(status, dict):
+        completed = status.get("completed")
+        status_str = status.get("status_str")
+        print(f'{utils.now_string()} [ComfyClient] prompt_id={prompt_id} found in history after {context}: status={status_str}, completed={completed}')
+    else:
+        print(f'{utils.now_string()} [ComfyClient] prompt_id={prompt_id} found in history after {context}')
+    return True
 
 
 def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=None, extra_data=None, prompt_accepted_callback=None):
@@ -351,9 +393,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
         for attempt, sleep_s in enumerate([1.0, 3.0, 6.0], start=1):
             try:
                 time.sleep(sleep_s)
-                new_ws = websocket.WebSocket()
-                new_ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
-                return new_ws
+                return connect_websocket(user_did)
             except Exception as e2:
                 last_err = e2
         raise websocket.WebSocketException(str(last_err))
@@ -362,13 +402,21 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
         model_management.throw_exception_if_processing_interrupted()
         try:
             out = ws.recv()
+        except websocket.WebSocketTimeoutException:
+            if prompt_finished_in_history(prompt_id, "websocket timeout"):
+                break
+            continue
         except Exception as e:
             ws = reconnect_websocket(str(e))
+            if prompt_finished_in_history(prompt_id, "websocket reconnect"):
+                break
             continue
 
         if isinstance(out, str):
             if out == "":
                 ws = reconnect_websocket("empty text frame")
+                if prompt_finished_in_history(prompt_id, "empty websocket frame"):
+                    break
                 continue
             try:
                 message = json.loads(out)
@@ -655,22 +703,19 @@ def process_flow(user_did, flow_name, params, images, callback=None, total_steps
             print(f'{utils.now_string()} [ComfyClient] websocket status: {ws.status}, timeout:{ws.timeout}s. ready to reset.')
             ws.close()
         try:
-            ws = websocket.WebSocket()
-            ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
+            ws = connect_websocket(user_did)
             client_id = user_did
         except Exception as e:
             print(f'{utils.now_string()} [ComfyClient] The connect_to_server has failed, sleep and try again: {e}')
             time.sleep(8)
             try:
-                ws = websocket.WebSocket()
-                ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
+                ws = connect_websocket(user_did)
                 client_id = user_did
             except Exception as e:
                 print(f'{utils.now_string()} [ComfyClient] The connect_to_server has failed, restart and try again: {e}')
                 time.sleep(12)
                 try:
-                    ws = websocket.WebSocket()
-                    ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
+                    ws = connect_websocket(user_did)
                     client_id = user_did
                 except Exception as e:
                     raise
