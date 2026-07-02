@@ -30,3 +30,9 @@ Due to the incomplete cleaning of the historical testing code, simpleai_base is 
 # Advice & Contact
 - We adhere to open source, make our code transparent, accept any supervision and friendly suggestions, and continuously improve. Contact me: 925457@qq.com
 - 我们坚持开源，让代码透明，接受任何监督和友好建议，持续改进。联系我：925457@qq.com
+
+# Development Notes / 开发记录
+
+## 2026-07-02 Py312 GitHub Actions branch / Py312 GitHub Actions 分支
+- The `build/py312` branch uses Python 3.12 in GitHub Actions for isolated wheel builds. The workflow sets `actions/setup-python` to `3.12`, uses `python3.12` for maturin, and marks artifacts as `wheels-py312-*`.
+- `build/py312` 分支用于单独编译 Python 3.12 wheel。workflow 中的 `actions/setup-python` 使用 `3.12`，maturin 使用 `python3.12`，artifact 名称使用 `wheels-py312-*`，便于和主线 Py313 构建区分。
