@@ -36,3 +36,7 @@ Due to the incomplete cleaning of the historical testing code, simpleai_base is 
 ## 2026-07-02 Py312 GitHub Actions branch / Py312 GitHub Actions 分支
 - The `build/py312` branch uses Python 3.12 in GitHub Actions for isolated wheel builds. The workflow sets `actions/setup-python` to `3.12`, uses `python3.12` for maturin, and marks artifacts as `wheels-py312-*`.
 - `build/py312` 分支用于单独编译 Python 3.12 wheel。workflow 中的 `actions/setup-python` 使用 `3.12`，maturin 使用 `python3.12`，artifact 名称使用 `wheels-py312-*`，便于和主线 Py313 构建区分。
+
+## 2026-07-02 Py312 package metadata / Py312 包元数据
+- The Python package metadata on `build/py312` now declares `requires-python = ">=3.12"` and Python 3.12 classifiers, so the Windows smoke test can install the generated `cp312` wheel.
+- `build/py312` 分支的包元数据现在声明 `requires-python = ">=3.12"` 和 Python 3.12 classifier，Windows 烟测可以安装生成的 `cp312` wheel。

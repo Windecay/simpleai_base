@@ -7,7 +7,7 @@ setup(
     install_requires=[
         'cbor2',
     ],
-    python_requires='>=3.13',
+    python_requires='>=3.12',
     include_package_data=True,
     description='A Python package with Rust code',
     author='Your Name',
@@ -15,7 +15,7 @@ setup(
     url='https://github.com/yourusername/my_python_package',
     classifiers=[
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.13',
+        'Programming Language :: Python :: 3.12',
         'License :: OSI Approved :: MIT License',
         'Operating System :: OS Independent',
     ],
