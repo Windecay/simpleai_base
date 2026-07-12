@@ -26,6 +26,7 @@ PREVIEW_NODE_CLASS_TYPES = {
     'WanVideoSampler',
     'SCAIL2ScheduledLongVideo',
     'SCAIL2ScheduledLongVideoWithSAM',
+    'SimpAIWanAnimateLoop',
     'LanPaint_KSampler',
     'LanPaint_SamplerCustom',
     'LanPaint_KSamplerAdvanced',
@@ -39,6 +40,7 @@ MULTI_PASS_PREVIEW_NODE_CLASS_TYPES = {
     'WanVideoSampler',
     'SCAIL2ScheduledLongVideo',
     'SCAIL2ScheduledLongVideoWithSAM',
+    'SimpAIWanAnimateLoop',
 }
 
 SAVE_NODE_CLASS_TYPES = {
@@ -856,6 +858,8 @@ if __name__ == "__main__":
     assert "SCAIL2ScheduledLongVideo" in PREVIEW_NODE_CLASS_TYPES
     assert "SCAIL2ScheduledLongVideoWithSAM" in PREVIEW_NODE_CLASS_TYPES
     assert "SCAIL2ScheduledLongVideoWithSAM" in MULTI_PASS_PREVIEW_NODE_CLASS_TYPES
+    assert "SimpAIWanAnimateLoop" in PREVIEW_NODE_CLASS_TYPES
+    assert "SimpAIWanAnimateLoop" in MULTI_PASS_PREVIEW_NODE_CLASS_TYPES
     assert _normalize_display_progress(6, 6, 7, 12) == (7, 12)
     assert _normalize_display_progress(6, None, 7, 12) == (7, 12)
     assert _normalize_display_progress(8, 12, 7, 12) == (8, 12)
