@@ -136,6 +136,25 @@ def _should_count_progress_as_sampler_step(class_type, inputs, max_val, total_st
 def _should_use_dynamic_stage_total(class_type):
     return class_type in MULTI_PASS_PREVIEW_NODE_CLASS_TYPES
 
+def _resolve_prompt_node_id(node_id, prompt):
+    if node_id in prompt:
+        return node_id
+    if not isinstance(node_id, str):
+        return node_id
+
+    parts = node_id.split('.')
+    for end in range(len(parts) - 1, 0, -1):
+        candidate = '.'.join(parts[:end])
+        if candidate in prompt:
+            return candidate
+
+    for start in range(1, len(parts)):
+        candidate = '.'.join(parts[start:])
+        if candidate in prompt:
+            return candidate
+
+    return node_id
+
 def _normalize_display_progress(step, total, last_step, last_total):
     step_i = _int_like(step)
     total_i = _int_like(total)
@@ -459,14 +478,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                          node_pass_count[current_node] = node_pass_count.get(current_node, 0) + 1
                      node_last_val[current_node] = value
                 if current_node:
-                     node_to_check = current_node
-                     if node_to_check not in prompt:
-                         parts = node_to_check.split('.')
-                         for i in range(len(parts) - 1, -1, -1):
-                             test_id = '.'.join(parts[i:])
-                             if test_id in prompt:
-                                 node_to_check = test_id
-                                 break
+                     node_to_check = _resolve_prompt_node_id(current_node, prompt)
                      if node_to_check in prompt:
                         class_type = prompt[node_to_check]['class_type']
                         if class_type in preview_nodes:
@@ -564,14 +576,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                 length = 16 if length > 16 else length
                 print(f'{utils.now_string()} [ComfyClient] feedback_stream({len(out)})={out[:length]}...')
             if current_node:
-                node_to_check = current_node
-                if node_to_check not in prompt:
-                    parts = node_to_check.split('.')
-                    for i in range(len(parts) - 1, -1, -1):
-                        test_id = '.'.join(parts[i:])
-                        if test_id in prompt:
-                            node_to_check = test_id
-                            break
+                node_to_check = _resolve_prompt_node_id(current_node, prompt)
 
                 if node_to_check in prompt:
                     (media_type, media_format) = get_media_info(out[:8])
@@ -853,6 +858,8 @@ client_id = str(uuid.uuid4())
 ws = None
 
 if __name__ == "__main__":
+    assert _resolve_prompt_node_id("aio_inpaint.0.0.5", {"aio_inpaint": {}}) == "aio_inpaint"
+    assert _resolve_prompt_node_id("prefix.42", {"42": {}}) == "42"
     assert "KSampler" in MULTI_PASS_PREVIEW_NODE_CLASS_TYPES
     assert "WanVideoSampler" in MULTI_PASS_PREVIEW_NODE_CLASS_TYPES
     assert "SCAIL2ScheduledLongVideo" in PREVIEW_NODE_CLASS_TYPES
