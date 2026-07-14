@@ -386,6 +386,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
     last_valid_image = None
     node_pass_count = {}
     node_last_val = {}
+    node_display_ids = {}
     sampler_stages = []
     sampler_stage_info = {}
 
@@ -453,7 +454,10 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
             data = message['data']
             if 'prompt_id' in data and data['prompt_id'] == prompt_id and 'node' in data:
                 if data['node'] is not None:
-                    current_node = data['node']
+                    event_node = data['node']
+                    if current_type == 'executing':
+                        node_display_ids[event_node] = data.get('display_node') or event_node
+                    current_node = node_display_ids.get(event_node, event_node)
                     if current_type == 'executing':
                         node_pass_count[current_node] = 0
                         node_last_val[current_node] = -1
@@ -472,7 +476,8 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                 stage_key = None
                 stage_node_id = None
                 if 'node' in data and data['node'] is not None:
-                     current_node = data['node'] # Update current node if provided
+                     event_node = data['node']
+                     current_node = node_display_ids.get(event_node, event_node)
                      last_val = node_last_val.get(current_node, -1)
                      if value < last_val:
                          node_pass_count[current_node] = node_pass_count.get(current_node, 0) + 1
