@@ -26,6 +26,7 @@ PREVIEW_NODE_CLASS_TYPES = {
     'WanVideoSampler',
     'SCAIL2ScheduledLongVideo',
     'SCAIL2ScheduledLongVideoWithSAM',
+    'SimpAIWanAnimateLoop',
     'LanPaint_KSampler',
     'LanPaint_SamplerCustom',
     'LanPaint_KSamplerAdvanced',
@@ -39,6 +40,7 @@ MULTI_PASS_PREVIEW_NODE_CLASS_TYPES = {
     'WanVideoSampler',
     'SCAIL2ScheduledLongVideo',
     'SCAIL2ScheduledLongVideoWithSAM',
+    'SimpAIWanAnimateLoop',
 }
 
 SAVE_NODE_CLASS_TYPES = {
@@ -133,6 +135,25 @@ def _should_count_progress_as_sampler_step(class_type, inputs, max_val, total_st
 
 def _should_use_dynamic_stage_total(class_type):
     return class_type in MULTI_PASS_PREVIEW_NODE_CLASS_TYPES
+
+def _resolve_prompt_node_id(node_id, prompt):
+    if node_id in prompt:
+        return node_id
+    if not isinstance(node_id, str):
+        return node_id
+
+    parts = node_id.split('.')
+    for end in range(len(parts) - 1, 0, -1):
+        candidate = '.'.join(parts[:end])
+        if candidate in prompt:
+            return candidate
+
+    for start in range(1, len(parts)):
+        candidate = '.'.join(parts[start:])
+        if candidate in prompt:
+            return candidate
+
+    return node_id
 
 def _normalize_display_progress(step, total, last_step, last_total):
     step_i = _int_like(step)
@@ -365,6 +386,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
     last_valid_image = None
     node_pass_count = {}
     node_last_val = {}
+    node_display_ids = {}
     sampler_stages = []
     sampler_stage_info = {}
 
@@ -432,7 +454,10 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
             data = message['data']
             if 'prompt_id' in data and data['prompt_id'] == prompt_id and 'node' in data:
                 if data['node'] is not None:
-                    current_node = data['node']
+                    event_node = data['node']
+                    if current_type == 'executing':
+                        node_display_ids[event_node] = data.get('display_node') or event_node
+                    current_node = node_display_ids.get(event_node, event_node)
                     if current_type == 'executing':
                         node_pass_count[current_node] = 0
                         node_last_val[current_node] = -1
@@ -451,20 +476,14 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                 stage_key = None
                 stage_node_id = None
                 if 'node' in data and data['node'] is not None:
-                     current_node = data['node'] # Update current node if provided
+                     event_node = data['node']
+                     current_node = node_display_ids.get(event_node, event_node)
                      last_val = node_last_val.get(current_node, -1)
                      if value < last_val:
                          node_pass_count[current_node] = node_pass_count.get(current_node, 0) + 1
                      node_last_val[current_node] = value
                 if current_node:
-                     node_to_check = current_node
-                     if node_to_check not in prompt:
-                         parts = node_to_check.split('.')
-                         for i in range(len(parts) - 1, -1, -1):
-                             test_id = '.'.join(parts[i:])
-                             if test_id in prompt:
-                                 node_to_check = test_id
-                                 break
+                     node_to_check = _resolve_prompt_node_id(current_node, prompt)
                      if node_to_check in prompt:
                         class_type = prompt[node_to_check]['class_type']
                         if class_type in preview_nodes:
@@ -562,14 +581,7 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                 length = 16 if length > 16 else length
                 print(f'{utils.now_string()} [ComfyClient] feedback_stream({len(out)})={out[:length]}...')
             if current_node:
-                node_to_check = current_node
-                if node_to_check not in prompt:
-                    parts = node_to_check.split('.')
-                    for i in range(len(parts) - 1, -1, -1):
-                        test_id = '.'.join(parts[i:])
-                        if test_id in prompt:
-                            node_to_check = test_id
-                            break
+                node_to_check = _resolve_prompt_node_id(current_node, prompt)
 
                 if node_to_check in prompt:
                     (media_type, media_format) = get_media_info(out[:8])
@@ -851,11 +863,15 @@ client_id = str(uuid.uuid4())
 ws = None
 
 if __name__ == "__main__":
+    assert _resolve_prompt_node_id("aio_inpaint.0.0.5", {"aio_inpaint": {}}) == "aio_inpaint"
+    assert _resolve_prompt_node_id("prefix.42", {"42": {}}) == "42"
     assert "KSampler" in MULTI_PASS_PREVIEW_NODE_CLASS_TYPES
     assert "WanVideoSampler" in MULTI_PASS_PREVIEW_NODE_CLASS_TYPES
     assert "SCAIL2ScheduledLongVideo" in PREVIEW_NODE_CLASS_TYPES
     assert "SCAIL2ScheduledLongVideoWithSAM" in PREVIEW_NODE_CLASS_TYPES
     assert "SCAIL2ScheduledLongVideoWithSAM" in MULTI_PASS_PREVIEW_NODE_CLASS_TYPES
+    assert "SimpAIWanAnimateLoop" in PREVIEW_NODE_CLASS_TYPES
+    assert "SimpAIWanAnimateLoop" in MULTI_PASS_PREVIEW_NODE_CLASS_TYPES
     assert _normalize_display_progress(6, 6, 7, 12) == (7, 12)
     assert _normalize_display_progress(6, None, 7, 12) == (7, 12)
     assert _normalize_display_progress(8, 12, 7, 12) == (8, 12)

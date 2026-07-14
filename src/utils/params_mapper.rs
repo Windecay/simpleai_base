@@ -65,8 +65,8 @@ static FOOO2NODE_DATA: &[(&str, &str)] = &[
     ("prompt", "CLIPTextEncode:prompt:text;CLIPTextEncode:prompt:text;MZ_ChatGLM3_V2:prompt:text;KolorsTextEncode:prompt_negative_prompt:prompt;CLIPTextEncodeFlux:prompt:t5xxl;CLIPTextEncodeFlux:prompt:clip_l;Co_Input_Zho:i2i_overall_input:positive;GeneralInput:GeneralInput:prompt;SceneInput:SceneInput:prompt"),
     ("negative_prompt", "CLIPTextEncode:negative_prompt:text;MZ_ChatGLM3_V2:negative_prompt:text;KolorsTextEncode:prompt_negative_prompt:negative_prompt;Co_Input_Zho:i2i_overall_input:negative;GeneralInput:GeneralInput:negative_prompt;SceneInput:SceneInput:negative_prompt"),
     ("additional_prompt", "easy string:additional_prompt:value;SceneInput:SceneInput:additional_prompt"),
-    ("clip_model", "DualCLIPLoader:clip_model:clip_name1;DualCLIPLoaderGGUF:DualCLIPLoaderGGUF:clip_name1;DualCLIPLoaderGGUF:clip_model:clip_name1;CLIPLoaderGGUF:CLIPLoaderGGUF:clip_name;CLIPLoaderGGUF:CLIPLoader (GGUF):clip_name;CLIPLoaderGGUF:clip_model:clip_name;CLIPLoader:CLIPLoader:clip_name;CLIPLoader:Load CLIP:clip_name;CLIPLoader:clip_model:clip_name;TripleCLIPLoader:TripleCLIPLoader:clip_name1;TripleCLIPLoader:clip_model:clip_name1;CLIPLoaderGGUF_Any:CLIPLoader (GGUF) (Any):clip_name;DualCLIPLoaderGGUF_Any:DualCLIPLoader (GGUF) (Any):clip_name1;TripleCLIPLoaderGGUF_Any:TripleCLIPLoader (GGUF) (Any):clip_name1;NunchakuTextEncoderLoaderV2:clip_model:text_encoder1"),
-    ("clip_model2", "DualCLIPLoader:clip_model:clip_name2;DualCLIPLoaderGGUF:DualCLIPLoaderGGUF:clip_name2;DualCLIPLoaderGGUF:clip_model:clip_name2;TripleCLIPLoader:TripleCLIPLoader:clip_name2;TripleCLIPLoader:clip_model:clip_name2;DualCLIPLoaderGGUF_Any:DualCLIPLoader (GGUF) (Any):clip_name2;TripleCLIPLoaderGGUF_Any:TripleCLIPLoader (GGUF) (Any):clip_name2;NunchakuTextEncoderLoaderV2:clip_model:text_encoder2"),
+    ("clip_model", "DualCLIPLoader:clip_model:clip_name1;DualCLIPLoaderGGUF:DualCLIPLoaderGGUF:clip_name1;DualCLIPLoaderGGUF:clip_model:clip_name1;CLIPLoaderGGUF:CLIPLoaderGGUF:clip_name;CLIPLoaderGGUF:CLIPLoader (GGUF):clip_name;CLIPLoaderGGUF:clip_model:clip_name;CLIPLoader:CLIPLoader:clip_name;CLIPLoader:Load CLIP:clip_name;CLIPLoader:clip_model:clip_name;TripleCLIPLoader:TripleCLIPLoader:clip_name1;TripleCLIPLoader:clip_model:clip_name1;CLIPLoader_Any:clip_model:clip_name;CLIPLoaderGGUF_Any:clip_model:clip_name;CLIPLoaderGGUF_Any:CLIPLoader (GGUF) (Any):clip_name;DualCLIPLoaderGGUF_Any:DualCLIPLoader (GGUF) (Any):clip_name1;TripleCLIPLoaderGGUF_Any:TripleCLIPLoader (GGUF) (Any):clip_name1;NunchakuTextEncoderLoaderV2:clip_model:text_encoder1"),
+    ("clip_model2", "DualCLIPLoader:clip_model:clip_name2;DualCLIPLoaderGGUF:DualCLIPLoaderGGUF:clip_name2;DualCLIPLoaderGGUF:clip_model:clip_name2;TripleCLIPLoader:TripleCLIPLoader:clip_name2;TripleCLIPLoader:clip_model:clip_name2;CLIPLoader_Any:clip_model2:clip_name;CLIPLoaderGGUF_Any:clip_model2:clip_name;DualCLIPLoaderGGUF_Any:DualCLIPLoader (GGUF) (Any):clip_name2;TripleCLIPLoaderGGUF_Any:TripleCLIPLoader (GGUF) (Any):clip_name2;NunchakuTextEncoderLoaderV2:clip_model:text_encoder2"),
     ("vae_model", "VAELoader:vae_model:vae_name;WanVideoVAELoader:vae_model:model_name"),
     ("upscale_model", "UpscaleModelLoader:upscale_model:model_name"),
     ("is_custom_vae", "easy boolean:is_custom_vae:value"),
@@ -198,11 +198,93 @@ static FOOO2NODE_DATA: &[(&str, &str)] = &[
     ("audio", "LoadAudio:Load Audio:audio;VHS_LoadAudioUpload:Load Audio (Upload)🎥🅥🅗🅢:audio"),
 ];
 
+static SIMPAI_AIO_NODE_DATA: &[(&str, &str)] = &[
+    ("i2i_ip_fn1", "SimpAIAIOReferenceConfig:SimpAI AIO Reference 1:mode"),
+    ("i2i_ip_fn2", "SimpAIAIOReferenceConfig:SimpAI AIO Reference 2:mode"),
+    ("i2i_ip_fn3", "SimpAIAIOReferenceConfig:SimpAI AIO Reference 3:mode"),
+    ("i2i_ip_fn4", "SimpAIAIOReferenceConfig:SimpAI AIO Reference 4:mode"),
+    ("i2i_ip_fn1_w", "SimpAIAIOReferenceConfig:SimpAI AIO Reference 1:weight"),
+    ("i2i_ip_fn2_w", "SimpAIAIOReferenceConfig:SimpAI AIO Reference 2:weight"),
+    ("i2i_ip_fn3_w", "SimpAIAIOReferenceConfig:SimpAI AIO Reference 3:weight"),
+    ("i2i_ip_fn4_w", "SimpAIAIOReferenceConfig:SimpAI AIO Reference 4:weight"),
+    ("i2i_ip_fn1_s", "SimpAIAIOReferenceConfig:SimpAI AIO Reference 1:stop_percent"),
+    ("i2i_ip_fn2_s", "SimpAIAIOReferenceConfig:SimpAI AIO Reference 2:stop_percent"),
+    ("i2i_ip_fn3_s", "SimpAIAIOReferenceConfig:SimpAI AIO Reference 3:stop_percent"),
+    ("i2i_ip_fn4_s", "SimpAIAIOReferenceConfig:SimpAI AIO Reference 4:stop_percent"),
+    ("i2i_skip_preprocessors", "SimpAIAIOReferenceConfig:SimpAI AIO Reference 1:skip_preprocessor;SimpAIAIOReferenceConfig:SimpAI AIO Reference 2:skip_preprocessor;SimpAIAIOReferenceConfig:SimpAI AIO Reference 3:skip_preprocessor;SimpAIAIOReferenceConfig:SimpAI AIO Reference 4:skip_preprocessor"),
+    ("i2i_uov_fn", "SimpAIAIOUOVConfig:SimpAI AIO UOV:mode"),
+    ("i2i_uov_is_mix_ip", "SimpAIAIOUOVConfig:SimpAI AIO UOV:mix_reference"),
+    ("i2i_uov_multiple", "SimpAIAIOUOVConfig:SimpAI AIO UOV:multiple"),
+    ("i2i_uov_tiled_width", "SimpAIAIOUOVConfig:SimpAI AIO UOV:tile_width"),
+    ("i2i_uov_tiled_height", "SimpAIAIOUOVConfig:SimpAI AIO UOV:tile_height"),
+    ("i2i_uov_tiled_steps", "SimpAIAIOUOVConfig:SimpAI AIO UOV:tile_steps"),
+    ("i2i_uov_hires_fix_w", "SimpAIAIOUOVConfig:SimpAI AIO UOV:hires_weight"),
+    ("i2i_uov_hires_fix_s", "SimpAIAIOUOVConfig:SimpAI AIO UOV:hires_stop"),
+    ("i2i_uov_hires_fix_blurred", "SimpAIAIOUOVConfig:SimpAI AIO UOV:hires_blur"),
+    ("i2i_inpaint_fn", "SimpAIAIOInpaintConfig:SimpAI AIO Inpaint:mode"),
+    ("i2i_inpaint_version", "SimpAIAIOInpaintConfig:SimpAI AIO Inpaint:engine"),
+    ("i2i_inpaint_is_invert_mask", "SimpAIAIOInpaintConfig:SimpAI AIO Inpaint:invert_mask"),
+    ("i2i_inpaint_is_mix_ip", "SimpAIAIOInpaintConfig:SimpAI AIO Inpaint:mix_reference"),
+    ("i2i_inpaint_disable_initial_latent", "SimpAIAIOInpaintConfig:SimpAI AIO Inpaint:disable_initial_latent"),
+    ("enhance_uov_method", "SimpAIAIOEnhanceUOVConfig:SimpAI AIO Enhance UOV:method"),
+    ("enhance_uov_multiple", "SimpAIAIOEnhanceUOVConfig:SimpAI AIO Enhance UOV:multiple"),
+    ("enhance_uov_tiled_width", "SimpAIAIOEnhanceUOVConfig:SimpAI AIO Enhance UOV:tile_width"),
+    ("enhance_uov_tiled_height", "SimpAIAIOEnhanceUOVConfig:SimpAI AIO Enhance UOV:tile_height"),
+    ("enhance_uov_tiled_steps", "SimpAIAIOEnhanceUOVConfig:SimpAI AIO Enhance UOV:tile_steps"),
+    ("enhance_uov_denoise", "SimpAIAIOEnhanceUOVConfig:SimpAI AIO Enhance UOV:denoise"),
+    ("enhance_uov_processing_order", "SimpAIAIOEnhanceUOVConfig:SimpAI AIO Enhance UOV:processing_order"),
+    ("enhance_uov_prompt_type", "SimpAIAIOEnhanceUOVConfig:SimpAI AIO Enhance UOV:prompt_type"),
+];
+
+fn append_simpai_aio_mappings(fooo2node: &mut HashMap<String, String>) {
+    for (key, mapping) in SIMPAI_AIO_NODE_DATA {
+        fooo2node.entry((*key).to_string()).and_modify(|existing| {
+            if !existing.is_empty() {
+                existing.push(';');
+            }
+            existing.push_str(mapping);
+        }).or_insert_with(|| (*mapping).to_string());
+    }
+
+    let region_fields = [
+        ("enhance_prompt", "prompt"),
+        ("enhance_negative_prompt", "negative_prompt"),
+        ("enhance_mask_dino_prompt_text", "detection_prompt"),
+        ("enhance_mask_model", "mask_model"),
+        ("enhance_mask_cloth_category", "cloth_category"),
+        ("enhance_mask_sam_model", "sam_model"),
+        ("enhance_mask_text_threshold", "text_threshold"),
+        ("enhance_mask_box_threshold", "box_threshold"),
+        ("enhance_mask_sam_max_detections", "max_detections"),
+        ("enhance_mask_invert", "invert_mask"),
+        ("enhance_inpaint_disable_initial_latent", "disable_initial_latent"),
+        ("enhance_inpaint_engine", "engine"),
+        ("enhance_inpaint_strength", "denoise"),
+        ("enhance_inpaint_respective_field", "respective_field"),
+        ("enhance_inpaint_erode_or_dilate", "erode_or_dilate"),
+    ];
+    for region_index in 0..3 {
+        let key_suffix = if region_index == 0 { "".to_string() } else { region_index.to_string() };
+        let title = format!("SimpAI AIO Region {}", region_index + 1);
+        for (key, input) in region_fields {
+            let full_key = format!("{}{}", key, key_suffix);
+            let mapping = format!("SimpAIAIORegionConfig:{}:{}", title, input);
+            fooo2node.entry(full_key).and_modify(|existing| {
+                if !existing.is_empty() {
+                    existing.push(';');
+                }
+                existing.push_str(&mapping);
+            }).or_insert(mapping);
+        }
+    }
+}
+
 #[pymethods]
 impl ComfyTaskParams {
     #[new]
     pub fn new(params: String, user_did: String) -> Self {
-        let fooo2node: HashMap<String, String> = FOOO2NODE_DATA.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let mut fooo2node: HashMap<String, String> = FOOO2NODE_DATA.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        append_simpai_aio_mappings(&mut fooo2node);
         let params: HashMap<String, Value> = match serde_json::from_str(&params) {
             Ok(json) => json,
             Err(_) => HashMap::new(),
