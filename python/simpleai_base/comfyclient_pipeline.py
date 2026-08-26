@@ -14,6 +14,23 @@ from . import utils
 
 COMFYUI_INPUT_DIRECTORY = None
 COMFYUI_WEBSOCKET_TIMEOUT = 10.0
+COMFYUI_SERVER_READY_TIMEOUT = 300.0
+COMFYUI_SERVER_READY_POLL_INTERVAL = 0.5
+COMFYUI_SERVER_READY_REQUEST_TIMEOUT = httpx.Timeout(3.0, connect=1.0)
+COMFYUI_PROMPT_HTTP_TIMEOUT = httpx.Timeout(60.0, connect=5.0)
+COMFYUI_PROMPT_ACCEPTANCE_TIMEOUT = 45.0
+COMFYUI_PROMPT_ACCEPTANCE_POLL_INTERVAL = 1.0
+COMFYUI_PROMPT_SUBMIT_ATTEMPTS = 2
+COMFYUI_HISTORY_RECOVERY_TIMEOUT = 5.0
+COMFYUI_HISTORY_RECOVERY_POLL_INTERVAL = 0.25
+COMFYUI_WEBSOCKET_RECONNECT_DELAYS = (1.0, 3.0, 6.0, 10.0)
+COMFYUI_PROMPT_MISSING_TIMEOUT = 30.0
+
+_TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
+
+
+class ComfyServerUnavailableError(RuntimeError):
+    pass
 
 PREVIEW_NODE_CLASS_TYPES = {
     'KSampler',
@@ -80,6 +97,82 @@ def connect_websocket(user_did):
     new_ws.settimeout(COMFYUI_WEBSOCKET_TIMEOUT)
     new_ws.connect("ws://{}/ws?clientId={}".format(server_address(), user_did))
     return new_ws
+
+
+def _close_websocket(target):
+    if target is None:
+        return
+    close = getattr(target, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def wait_for_server_ready(
+    timeout_seconds=COMFYUI_SERVER_READY_TIMEOUT,
+    poll_interval=COMFYUI_SERVER_READY_POLL_INTERVAL,
+    process_alive_callback=None,
+):
+    endpoint = "http://{}/system_stats".format(server_address())
+    started_at = time.monotonic()
+    deadline = started_at + max(0.0, float(timeout_seconds))
+    last_error = None
+    next_log_at = 0.0
+
+    with httpx.Client(timeout=COMFYUI_SERVER_READY_REQUEST_TIMEOUT) as client:
+        while True:
+            model_management.throw_exception_if_processing_interrupted()
+            if process_alive_callback is not None:
+                try:
+                    process_alive = bool(process_alive_callback())
+                except Exception as exc:
+                    raise ComfyServerUnavailableError(
+                        f"Unable to inspect the Comfy backend process before submission: {exc}"
+                    ) from exc
+                if not process_alive:
+                    raise ComfyServerUnavailableError(
+                        "The Comfy backend process exited before its HTTP service became ready."
+                    )
+
+            try:
+                response = client.get(endpoint)
+                response.raise_for_status()
+                elapsed = time.monotonic() - started_at
+                if elapsed >= COMFYUI_SERVER_READY_POLL_INTERVAL:
+                    print(f'{utils.now_string()} [ComfyClient] Comfy server ready after {elapsed:.1f}s: {endpoint}')
+                return True
+            except httpx.HTTPError as exc:
+                last_error = exc
+
+            now = time.monotonic()
+            elapsed = now - started_at
+            remaining = deadline - now
+            if remaining <= 0:
+                raise ComfyServerUnavailableError(
+                    f"Timed out after {elapsed:.1f}s waiting for the Comfy HTTP service before submission: {last_error}"
+                ) from last_error
+            if elapsed >= next_log_at:
+                print(
+                    f'{utils.now_string()} [ComfyClient] waiting for Comfy server readiness '
+                    f'elapsed={elapsed:.1f}s endpoint={endpoint}: {last_error}'
+                )
+                next_log_at = elapsed + 15.0
+            time.sleep(min(max(0.05, float(poll_interval)), remaining))
+
+
+def _connect_websocket_with_retry(client_id):
+    last_error = None
+    for attempt, sleep_seconds in enumerate((0.0, 2.0, 5.0), start=1):
+        if sleep_seconds:
+            time.sleep(sleep_seconds)
+        try:
+            return connect_websocket(client_id)
+        except Exception as exc:
+            last_error = exc
+            print(f'{utils.now_string()} [ComfyClient] websocket connect attempt {attempt} failed: {exc}')
+    raise websocket.WebSocketException(str(last_error))
 
 def _int_like(val):
     if isinstance(val, bool) or val is None:
@@ -242,22 +335,67 @@ def upload_mask(mask):
     return response.json()
 
 
-def queue_prompt(user_did, prompt, user_cert, extra_data=None):
-    p = {"prompt": prompt, "client_id": user_did, "user_cert": user_cert}
+def get_job(prompt_id, timeout=5.0):
+    with httpx.Client(timeout=timeout) as client:
+        response = client.get("http://{}/api/jobs/{}".format(server_address(), prompt_id))
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.json()
+
+
+def wait_for_prompt_acceptance(prompt_id, timeout_seconds=COMFYUI_PROMPT_ACCEPTANCE_TIMEOUT):
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    while True:
+        try:
+            job = get_job(prompt_id)
+        except httpx.HTTPError:
+            job = None
+        if isinstance(job, dict) and job.get("id") == prompt_id:
+            print(f'{utils.now_string()} [ComfyClient] recovered accepted prompt_id={prompt_id}, status={job.get("status")}')
+            return job
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        time.sleep(min(COMFYUI_PROMPT_ACCEPTANCE_POLL_INTERVAL, remaining))
+
+
+def queue_prompt(user_did, prompt, user_cert, extra_data=None, process_alive_callback=None):
+    prompt_id = str(uuid.uuid4())
+    p = {"prompt": prompt, "client_id": user_did, "user_cert": user_cert, "prompt_id": prompt_id}
     if extra_data:
         p["extra_data"] = extra_data
     data = json.dumps(p).encode('utf-8')
-    try:
-        with httpx.Client(timeout=20.0) as client:
-            response = client.post("http://{}/prompt".format(server_address()), data=data)
+    for attempt in range(1, COMFYUI_PROMPT_SUBMIT_ATTEMPTS + 1):
+        try:
+            with httpx.Client(timeout=COMFYUI_PROMPT_HTTP_TIMEOUT) as client:
+                response = client.post("http://{}/prompt".format(server_address()), data=data)
             if response.status_code == 200:
-                return json.loads(response.read())
-            else:
-                print(f"{utils.now_string()} Error: {response.status_code} {response.text}")
-                return None
-    except httpx.RequestError as e:
-        print(f"{utils.now_string()} httpx.RequestError: {e}")
-        return None
+                result = json.loads(response.read())
+                if result.get("prompt_id") != prompt_id:
+                    print(f"{utils.now_string()} Error: Comfy returned a different prompt_id: {result}")
+                    return None
+                return result
+            print(f"{utils.now_string()} Error: {response.status_code} {response.text}")
+            return None
+        except httpx.RequestError as e:
+            print(f"{utils.now_string()} httpx.RequestError submitting prompt_id={prompt_id}, attempt={attempt}: {e}")
+            connection_failed = isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+            ambiguous = not connection_failed
+            if ambiguous:
+                job = wait_for_prompt_acceptance(prompt_id)
+                if job is not None:
+                    return {
+                        "prompt_id": prompt_id,
+                        "recovered": True,
+                        "job_status": job.get("status"),
+                    }
+            if attempt < COMFYUI_PROMPT_SUBMIT_ATTEMPTS:
+                if connection_failed:
+                    wait_for_server_ready(process_alive_callback=process_alive_callback)
+                else:
+                    time.sleep(1.0)
+    return None
 
 
 def get_image(filename, subfolder, folder_type):
@@ -266,14 +404,16 @@ def get_image(filename, subfolder, folder_type):
         "subfolder": subfolder,
         "type": folder_type
     })
-    with httpx.Client() as client:
+    with httpx.Client(timeout=60.0) as client:
         response = client.get(f"http://{server_address()}/view", params=params)
+        response.raise_for_status()
         return response.read()
 
 
 def get_history(prompt_id):
     with httpx.Client(timeout=20.0) as client:
         response = client.get("http://{}/history/{}".format(server_address(), prompt_id))
+        response.raise_for_status()
         return json.loads(response.read())
 
 
@@ -312,7 +452,101 @@ def prompt_finished_in_history(prompt_id, context):
     return True
 
 
-def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=None, extra_data=None, prompt_accepted_callback=None):
+def _history_item_is_terminal(history_item):
+    if not isinstance(history_item, dict):
+        return False
+    status = history_item.get("status")
+    if not isinstance(status, dict):
+        return False
+    if status.get("completed") is True:
+        return True
+    return str(status.get("status_str") or "").lower() in {"success", "error", "failed", "cancelled"}
+
+
+def _encode_history_video_payload(raw, media_format):
+    format_code = {"webm": 10, "mp4": 11}.get(str(media_format).lower())
+    if format_code is None:
+        return None
+    return struct.pack(">II", 4, format_code) + raw
+
+
+def _recover_history_output_data(prompt_id, prompt, history_item, node_ids=None):
+    history_outputs = history_item.get("outputs") if isinstance(history_item, dict) else None
+    if not isinstance(history_outputs, dict):
+        return {}
+
+    requested_nodes = set(node_ids) if node_ids is not None else None
+    recovered = {}
+    image_extensions = {"png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff"}
+    video_extensions = {"mp4", "webm", "mov", "mkv", "avi"}
+    for history_node_id, node_outputs in history_outputs.items():
+        node_id = _resolve_prompt_node_id(str(history_node_id), prompt)
+        if requested_nodes is not None and node_id not in requested_nodes:
+            continue
+        if not isinstance(node_outputs, dict):
+            continue
+        prompt_node = prompt.get(node_id, {})
+        title = str(prompt_node.get("_meta", {}).get("title") or node_id)
+        for output_name, items in node_outputs.items():
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                filename = item.get("filename")
+                if not isinstance(filename, str) or not filename:
+                    continue
+                extension = os.path.splitext(filename)[1].lower().lstrip(".")
+                if output_name == "images" or extension in image_extensions:
+                    media_type = "image"
+                elif output_name in ("video", "videos", "gifs") or extension in video_extensions:
+                    media_type = "video"
+                else:
+                    continue
+                try:
+                    raw = get_image(filename, item.get("subfolder", ""), item.get("type", "output"))
+                except Exception as exc:
+                    print(f'{utils.now_string()} [ComfyClient] failed to recover output prompt_id={prompt_id}, filename={filename}: {exc}')
+                    continue
+                media_format = extension or "unknown"
+                if media_type == "video":
+                    raw = _encode_history_video_payload(raw, media_format)
+                    if raw is None:
+                        print(f'{utils.now_string()} [ComfyClient] unsupported history video format prompt_id={prompt_id}, filename={filename}')
+                        continue
+                media_name = f'{title}_{media_type}_{media_format}'
+                recovered.setdefault(media_name, []).append(raw)
+    return recovered
+
+
+def recover_history_outputs(
+    prompt_id,
+    prompt,
+    node_ids=None,
+    timeout_seconds=COMFYUI_HISTORY_RECOVERY_TIMEOUT,
+    poll_interval=COMFYUI_HISTORY_RECOVERY_POLL_INTERVAL,
+):
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    while True:
+        history_item = get_history_item(prompt_id)
+        if history_item is not None:
+            recovered = _recover_history_output_data(prompt_id, prompt, history_item, node_ids)
+            if recovered:
+                print(f'{utils.now_string()} [ComfyClient] recovered {len(recovered)} output groups from history prompt_id={prompt_id}')
+                return recovered
+            if _history_item_is_terminal(history_item):
+                return {}
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {}
+        time.sleep(min(max(0.01, float(poll_interval)), remaining))
+
+
+def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=None, extra_data=None, prompt_accepted_callback=None, _socket_holder=None, process_alive_callback=None):
+    if _socket_holder is not None:
+        _socket_holder[0] = ws
+
     def format_progress(val):
         if isinstance(val, float):
             val = round(val, 1)
@@ -356,7 +590,13 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
             "effective_steps": effective_steps,
         }
 
-    result  = queue_prompt(user_did, prompt, user_cert, extra_data)
+    result = queue_prompt(
+        user_did,
+        prompt,
+        user_cert,
+        extra_data,
+        process_alive_callback=process_alive_callback,
+    )
     if result is None or 'prompt_id' not in result:
         if result:
             print(f'{utils.now_string()} [ComfyClient] Error in inference prompt: {result.get("error")}, {result.get("node_errors")}, user_did={user_did}')
@@ -372,6 +612,9 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
         except Exception as e:
             print(f"{utils.now_string()} [ComfyClient] Error calling prompt_accepted_callback: {e}")
     output_images = {}
+    received_output_nodes = set()
+    output_names_by_node = {}
+    history_recovery_needed = ws is None
     current_node = ''
     current_type = ''
     preview_nodes = PREVIEW_NODE_CLASS_TYPES
@@ -410,34 +653,84 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
             print(f"{utils.now_string()} [ComfyClient] Error calling callback in {context}: {e}")
 
     def reconnect_websocket(reason):
+        nonlocal history_recovery_needed
+        history_recovery_needed = True
         print(f'{utils.now_string()} [ComfyClient] websocket read interrupted, reconnect and continue prompt_id={prompt_id}: {reason}')
-        last_err = None
-        for attempt, sleep_s in enumerate([1.0, 3.0, 6.0], start=1):
-            try:
-                time.sleep(sleep_s)
-                return connect_websocket(user_did)
-            except Exception as e2:
-                last_err = e2
-        raise websocket.WebSocketException(str(last_err))
+        _close_websocket(ws)
+        if _socket_holder is not None:
+            _socket_holder[0] = None
 
+        attempt = 0
+        missing_since = None
+        last_err = reason
+        while True:
+            model_management.throw_exception_if_processing_interrupted()
+            sleep_s = COMFYUI_WEBSOCKET_RECONNECT_DELAYS[
+                min(attempt, len(COMFYUI_WEBSOCKET_RECONNECT_DELAYS) - 1)
+            ]
+            time.sleep(sleep_s)
+            attempt += 1
+            try:
+                new_ws = connect_websocket(user_did)
+            except Exception as reconnect_error:
+                last_err = reconnect_error
+            else:
+                if _socket_holder is not None:
+                    _socket_holder[0] = new_ws
+                print(f'{utils.now_string()} [ComfyClient] websocket reconnected prompt_id={prompt_id}, attempt={attempt}')
+                return new_ws, False
+
+            job_lookup_succeeded = False
+            job = None
+            try:
+                job = get_job(prompt_id)
+                job_lookup_succeeded = True
+            except httpx.HTTPError as job_error:
+                if attempt == 1 or attempt % 6 == 0:
+                    print(f'{utils.now_string()} [ComfyClient] job status unavailable while websocket is disconnected prompt_id={prompt_id}: {job_error}')
+
+            if isinstance(job, dict):
+                missing_since = None
+                status = str(job.get("status") or "").lower()
+                if status in _TERMINAL_JOB_STATUSES:
+                    print(f'{utils.now_string()} [ComfyClient] prompt reached terminal status without websocket prompt_id={prompt_id}, status={status}')
+                    return None, True
+            elif job_lookup_succeeded:
+                now = time.monotonic()
+                if missing_since is None:
+                    missing_since = now
+                elif now - missing_since >= COMFYUI_PROMPT_MISSING_TIMEOUT:
+                    raise websocket.WebSocketException(
+                        f"prompt_id={prompt_id} is no longer present after websocket disconnect: {last_err}"
+                    )
+
+            if attempt == len(COMFYUI_WEBSOCKET_RECONNECT_DELAYS) or attempt % 6 == 0:
+                print(f'{utils.now_string()} [ComfyClient] websocket still unavailable; waiting for the same task prompt_id={prompt_id}, attempt={attempt}: {last_err}')
+
+    prompt_finished = False
     while True:
         model_management.throw_exception_if_processing_interrupted()
+        if ws is None:
+            ws, prompt_finished = reconnect_websocket("websocket unavailable after prompt submission")
+            if prompt_finished:
+                break
         try:
             out = ws.recv()
         except websocket.WebSocketTimeoutException:
             if prompt_finished_in_history(prompt_id, "websocket timeout"):
+                history_recovery_needed = True
                 break
             continue
         except Exception as e:
-            ws = reconnect_websocket(str(e))
-            if prompt_finished_in_history(prompt_id, "websocket reconnect"):
+            ws, prompt_finished = reconnect_websocket(str(e))
+            if prompt_finished:
                 break
             continue
 
         if isinstance(out, str):
             if out == "":
-                ws = reconnect_websocket("empty text frame")
-                if prompt_finished_in_history(prompt_id, "empty websocket frame"):
+                ws, prompt_finished = reconnect_websocket("empty text frame")
+                if prompt_finished:
                     break
                 continue
             try:
@@ -445,13 +738,17 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
             except json.JSONDecodeError as e:
                 print(f'{utils.now_string()} [ComfyClient] Skip non-json websocket text for prompt_id={prompt_id}: {repr(out[:200])}, error={e}')
                 continue
+            if not isinstance(message, dict):
+                continue
             if not utils.echo_off:
                 print(f'{utils.now_string()} [ComfyClient] feedback_message={message}')
-            current_type = message['type']
+            current_type = message.get('type')
+            data = message.get('data')
+            if not current_type or not isinstance(data, dict):
+                continue
 
             if current_type == 'VHS_latentpreview':
                 pass
-            data = message['data']
             if 'prompt_id' in data and data['prompt_id'] == prompt_id and 'node' in data:
                 if data['node'] is not None:
                     event_node = data['node']
@@ -593,6 +890,8 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                         else:
                             images_output.append(out[8:])
                         output_images[media_name] = images_output
+                        received_output_nodes.add(node_to_check)
+                        output_names_by_node.setdefault(node_to_check, set()).add(media_name)
                     elif callback is not None:
                         is_vhs = current_type == 'VHS_latentpreview' or is_vhs_active
                         if is_vhs and not utils.echo_off:
@@ -651,8 +950,38 @@ def get_images(user_did, ws, prompt, callback=None, total_steps=None, user_cert=
                             except Exception as e:
                                 print(f"{utils.now_string()} [ComfyClient] Error decoding preview image: {e}")
 
-    output_images_type = ['_'.join(k.split('_')[-2:]) for k, v in output_images.items()]
-    output_images = {k: np.array(Image.open(BytesIO(v[-1]))) if 'image' in k else v[-1] for k, v in output_images.items()}
+    expected_output_nodes = {
+        node_id
+        for node_id, node in prompt.items()
+        if isinstance(node, dict) and node.get("class_type") in save_nodes
+    }
+    missing_output_nodes = expected_output_nodes - received_output_nodes
+    recovery_nodes = expected_output_nodes if history_recovery_needed else missing_output_nodes
+    if recovery_nodes:
+        try:
+            recovered_outputs = recover_history_outputs(prompt_id, prompt, recovery_nodes)
+        except Exception as exc:
+            print(f'{utils.now_string()} [ComfyClient] history output recovery failed prompt_id={prompt_id}: {exc}')
+            recovered_outputs = {}
+        if recovered_outputs:
+            for node_id in recovery_nodes:
+                prompt_node = prompt.get(node_id, {})
+                title = str(prompt_node.get("_meta", {}).get("title") or node_id)
+                if any(name.startswith(f"{title}_") for name in recovered_outputs):
+                    for output_name in output_names_by_node.get(node_id, set()):
+                        output_images.pop(output_name, None)
+            output_images.update(recovered_outputs)
+
+    decoded_outputs = {}
+    for name, values in output_images.items():
+        if not values:
+            continue
+        try:
+            decoded_outputs[name] = np.array(Image.open(BytesIO(values[-1]))) if 'image' in name else values[-1]
+        except Exception as exc:
+            print(f'{utils.now_string()} [ComfyClient] failed to decode recovered output prompt_id={prompt_id}, name={name}: {exc}')
+    output_images = decoded_outputs
+    output_images_type = ['_'.join(k.split('_')[-2:]) for k in output_images]
     print(f'{utils.now_string()} [ComfyClient] The ComfyTask:{prompt_id} has finished, get {len(output_images)} result: {output_images_type}')
     return output_images
 
@@ -707,32 +1036,8 @@ def images_upload(images):
     return result
 
 
-def process_flow(user_did, flow_name, params, images, callback=None, total_steps=None, user_cert=None, extra_data=None, prompt_accepted_callback=None):
-    global ws, client_id
-
-    if ws is None or user_did != client_id or ws.status != 101:
-        if ws is not None:
-            print(f'{utils.now_string()} [ComfyClient] websocket status: {ws.status}, timeout:{ws.timeout}s. ready to reset.')
-            ws.close()
-        try:
-            ws = connect_websocket(user_did)
-            client_id = user_did
-        except Exception as e:
-            print(f'{utils.now_string()} [ComfyClient] The connect_to_server has failed, sleep and try again: {e}')
-            time.sleep(8)
-            try:
-                ws = connect_websocket(user_did)
-                client_id = user_did
-            except Exception as e:
-                print(f'{utils.now_string()} [ComfyClient] The connect_to_server has failed, restart and try again: {e}')
-                time.sleep(12)
-                try:
-                    ws = connect_websocket(user_did)
-                    client_id = user_did
-                except Exception as e:
-                    raise
-
-
+def process_flow(user_did, flow_name, params, images, callback=None, total_steps=None, user_cert=None, extra_data=None, prompt_accepted_callback=None, process_alive_callback=None):
+    wait_for_server_ready(process_alive_callback=process_alive_callback)
     images_map = images_upload(images)
     params.update_params(images_map)
 
@@ -759,15 +1064,33 @@ def process_flow(user_did, flow_name, params, images, callback=None, total_steps
             if base_key in current_params and str(current_params[base_key]) == 'placeholder.safetensors':
                 continue
         print(f'    {k} = {v}')
+    socket_holder = [None]
+    job_client_id = str(uuid.uuid4())
     try:
         prompt_str = params.convert2comfy(flow_name)
         if not utils.echo_off:
             pass #print(f'{utils.now_string()} [ComfyClient] ComfyTask prompt: {prompt_str}')
-        images = get_images(user_did, ws, prompt_str, callback=callback, total_steps=total_steps, user_cert=user_cert, extra_data=extra_data, prompt_accepted_callback=prompt_accepted_callback)
-        # ws.close()
+        try:
+            socket_holder[0] = _connect_websocket_with_retry(job_client_id)
+        except websocket.WebSocketException as websocket_error:
+            print(f'{utils.now_string()} [ComfyClient] websocket unavailable before prompt submission; continue with job polling: {websocket_error}')
+        images = get_images(
+            job_client_id,
+            socket_holder[0],
+            prompt_str,
+            callback=callback,
+            total_steps=total_steps,
+            user_cert=user_cert,
+            extra_data=extra_data,
+            prompt_accepted_callback=prompt_accepted_callback,
+            _socket_holder=socket_holder,
+            process_alive_callback=process_alive_callback,
+        )
     except websocket.WebSocketException as e:
         print(f'{utils.now_string()} [ComfyClient] The connect has been closed, restart and try again: {e}')
-        ws = None
+        images = None
+    finally:
+        _close_websocket(socket_holder[0])
 
     imgs = []
     if images:
