@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='simpleai_base',
-    version='0.3.50',
+    version='0.3.53',
     packages=['simpleai_base'],
     install_requires=[
         'cbor2',

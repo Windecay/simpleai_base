@@ -129,7 +129,7 @@ def start(args_patch=[[]], force=False):
         comfyclient_pipeline.ws = None
 
     else:
-        print(f"{utils.now_string()} [Comfyd] Comfyd is active!")
+        print(f"{utils.now_string()} [Comfyd] Comfyd process is active; server readiness is pending.")
     return
 
 
