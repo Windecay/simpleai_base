@@ -148,6 +148,29 @@ impl TokenDB {
         "Unknown".to_string()
     }
 
+    pub fn get_optional(&self, tree: &str, key: &str) -> Result<Option<String>, String> {
+        if let Some(tree) = self.trees.get(tree) {
+            return tree
+                .get(key)
+                .map_err(|e| e.to_string())?
+                .map(|data| String::from_utf8(data.to_vec()).map_err(|e| e.to_string()))
+                .transpose();
+        }
+        if !api::service_online() {
+            return Err("token database unavailable".to_owned());
+        }
+        let value = api::request_api_sync::<String>(
+            "db_get",
+            Some(json!({"tree": tree, "key": key})),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(if value == "Unknown" || value.is_empty() {
+            None
+        } else {
+            Some(value)
+        })
+    }
+
     pub fn insert(&self, tree: &str, key: &str, value: &str) -> bool {
         if self.trees.contains_key(tree) {
             let ivec_data = sled::IVec::from(value.as_bytes());
@@ -160,16 +183,23 @@ impl TokenDB {
                     "key": key,
                     "value": value,
                 });
-                let _ = match api::request_api_sync::<bool>("db_insert", Some(params)) {
-                    Ok(_) =>  true,
+                return match api::request_api_sync::<bool>("db_insert", Some(params)) {
+                    Ok(saved) => saved,
                     Err(e) => {
                         error!("Failed to insert value into remote DB: {}", e);
                         false
                     }
                 };
-                return true;
             }
             return false;
+        }
+    }
+
+    pub fn insert_durable(&self, tree: &str, key: &str, value: &str) -> bool {
+        if let Some(tree) = self.trees.get(tree) {
+            tree.insert(key, value.as_bytes()).is_ok() && tree.flush().is_ok()
+        } else {
+            self.insert(tree, key, value)
         }
     }
 
@@ -235,5 +265,76 @@ impl TokenDB {
             }
             HashMap::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn isolated_db() -> TokenDB {
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let tree = db.open_tree("user_sessions").unwrap();
+        TokenDB {
+            sled_db: Arc::new(RwLock::new(Some(db))),
+            trees: HashMap::from([("user_sessions".to_owned(), tree)]),
+        }
+    }
+
+    #[test]
+    fn session_reads_distinguish_missing_values_from_corrupt_values() {
+        let db = isolated_db();
+        assert_eq!(db.get_optional("user_sessions", "missing").unwrap(), None);
+        assert!(db.insert_durable("user_sessions", "session", "encrypted-record"));
+        assert_eq!(
+            db.get_optional("user_sessions", "session").unwrap(),
+            Some("encrypted-record".to_owned())
+        );
+        db.trees["user_sessions"].insert("corrupt", vec![255u8]).unwrap();
+        assert!(db.get_optional("user_sessions", "corrupt").is_err());
+    }
+
+    #[test]
+    fn encrypted_browser_sessions_and_revocation_survive_database_reopen() {
+        use crate::browser_session::{self, BrowserSession};
+        let parent = std::env::temp_dir();
+        let path = parent.join(format!("simpleai-session-test-{}", browser_session::new_token()));
+        let token = browser_session::new_token();
+        let storage_key = browser_session::storage_key(&token, "system").unwrap();
+        let crypt_key = [19u8; 32];
+        let now = 1_700_000_000;
+        let open = || {
+            let db = sled::open(&path).unwrap();
+            let tree = db.open_tree("user_sessions").unwrap();
+            TokenDB {
+                sled_db: Arc::new(RwLock::new(Some(db))),
+                trees: HashMap::from([("user_sessions".to_owned(), tree)]),
+            }
+        };
+        {
+            let db = open();
+            let record = BrowserSession::new("user", "system", "context", now);
+            assert!(db.insert_durable(
+                "user_sessions", &storage_key, &record.encode(&crypt_key).unwrap()
+            ));
+        }
+        {
+            let db = open();
+            let encoded = db.get_optional("user_sessions", &storage_key).unwrap().unwrap();
+            let mut record = BrowserSession::decode(&encoded, &crypt_key).unwrap();
+            assert_eq!(record.status("system", now + 1), "valid");
+            record.revoked = true;
+            assert!(db.insert_durable(
+                "user_sessions", &storage_key, &record.encode(&crypt_key).unwrap()
+            ));
+        }
+        {
+            let db = open();
+            let encoded = db.get_optional("user_sessions", &storage_key).unwrap().unwrap();
+            let record = BrowserSession::decode(&encoded, &crypt_key).unwrap();
+            assert_eq!(record.status("system", now + 2), "revoked");
+        }
+        assert!(path.starts_with(&parent));
+        std::fs::remove_dir_all(&path).unwrap();
     }
 }
