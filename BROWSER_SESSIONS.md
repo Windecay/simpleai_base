@@ -41,3 +41,7 @@ Windows, and macOS. The smoke test covers browser User-Agent changes,
 validation from another process, legacy upgrades, and revocation in both
 directions. Each wheel artifact includes `SHA256SUMS`; only wheel files are
 included in the existing tag-triggered PyPI upload.
+
+`cargo test --lib --locked` uses PyO3's normal Python library linking.
+Maturin enables `pyo3/extension-module` through `pyproject.toml` only for wheels;
+enabling it unconditionally would prevent Unix Rust test executables from linking.

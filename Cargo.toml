@@ -10,8 +10,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies.pyo3]
 # PyO3 0.22 adds support for building CPython 3.13 extension wheels.
+# Maturin enables extension-module in pyproject.toml; Rust tests must link libpython.
 version = "0.22.6"
-features = ["extension-module"]
 
 
 [dependencies]
