@@ -15,6 +15,7 @@ use crate::utils::systeminfo::SystemInfo;
 use pyo3::prelude::*;
 
 mod api;
+mod browser_session;
 mod dids;
 mod p2p;
 mod token;

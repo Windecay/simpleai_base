@@ -23,6 +23,7 @@ use tracing_subscriber::EnvFilter;
 use pyo3::prelude::*;
 
 use crate::api;
+use crate::browser_session::{self, BrowserSession};
 use crate::dids::cert_center::GlobalCerts;
 use crate::dids::claims::{GlobalClaims, IdClaim, UserContext};
 use crate::dids::TOKEN_ENTRYPOINT_DID;
@@ -62,6 +63,102 @@ pub struct SimpleAI {
     shared_data: &'static SharedData,
     p2p_config: String,
     p2p_status: Option<api::P2pStatus>,
+}
+
+impl SimpleAI {
+    fn session_now() -> u64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    }
+
+    fn browser_session_crypt_key(&self) -> [u8; 32] {
+        self.didtoken.lock().unwrap().get_local_crypt_text("browser-session-v2")
+    }
+
+    fn legacy_revocation_key(&self, session: &str) -> String {
+        format!(
+            "legacy_revoked:{}:{}",
+            self.get_sys_did(),
+            URL_SAFE_NO_PAD.encode(token_utils::calc_sha256(session.as_bytes()))
+        )
+    }
+
+    fn legacy_upgrade_key(&self, session: &str) -> String {
+        format!(
+            "legacy_upgrade:{}:{}",
+            self.get_sys_did(),
+            URL_SAFE_NO_PAD.encode(token_utils::calc_sha256(session.as_bytes()))
+        )
+    }
+
+    fn legacy_upgrade(&self, session: &str) -> Result<Option<String>, String> {
+        let key = self.legacy_upgrade_key(session);
+        let encoded = self.token_db.read().unwrap().get_optional("user_sessions", &key)?;
+        encoded
+            .map(|encoded| {
+                browser_session::decode_upgrade(&encoded, &self.browser_session_crypt_key())
+                    .ok_or_else(|| "invalid upgrade record".to_owned())
+            })
+            .transpose()
+    }
+
+    fn save_browser_session(&self, session: &str, record: &BrowserSession) -> bool {
+        let key = match browser_session::storage_key(session, &self.get_sys_did()) {
+            Some(key) => key,
+            None => return false,
+        };
+        let encoded = match record.encode(&self.browser_session_crypt_key()) {
+            Ok(encoded) => encoded,
+            Err(_) => return false,
+        };
+        self.token_db.read().unwrap().insert_durable("user_sessions", &key, &encoded)
+    }
+
+    fn resolve_browser_session(&mut self, session: &str) -> serde_json::Value {
+        self.sid_did_map.lock().unwrap().remove(session);
+        let rejected = |status: &str| {
+            json!({"status": status, "did": "", "sstoken": "", "expires_in": 0})
+        };
+        let sys_did = self.get_sys_did();
+        let key = match browser_session::storage_key(session, &sys_did) {
+            Some(key) => key,
+            None => return rejected("invalid"),
+        };
+        let stored = self.token_db.read().unwrap().get_optional("user_sessions", &key);
+        let encoded = match stored {
+            Ok(Some(encoded)) => encoded,
+            Ok(None) => return rejected("revoked"),
+            Err(_) => return rejected("unavailable"),
+        };
+        let mut record = match BrowserSession::decode(&encoded, &self.browser_session_crypt_key()) {
+            Some(record) => record,
+            None => return rejected("invalid"),
+        };
+        let now = Self::session_now();
+        let status = record.status(&sys_did, now);
+        if status != "valid" || !IdClaim::validity(&record.did) {
+            return rejected(if status == "valid" { "invalid" } else { status });
+        }
+        let context = self.tokenuser.lock().unwrap().get_user_context(&record.did);
+        if context.is_default() {
+            return rejected("unavailable");
+        }
+        if context.is_expired() || !record.matches_context(&context.get_sig()) {
+            return rejected("revoked");
+        }
+        let previous = record.clone();
+        if record.touch(now) && !self.save_browser_session(session, &record) {
+            // A failed renewal does not invalidate a still-valid credential.
+            record = previous;
+            warn!("Unable to renew browser session");
+        }
+        self.sid_did_map.lock().unwrap().insert(session.to_owned(), record.did.clone());
+        json!({
+            "status": "valid",
+            "did": record.did,
+            "sstoken": session,
+            "expires_in": record.expires_in(now),
+        })
+    }
 }
 
 #[pymethods]
@@ -927,6 +1024,132 @@ impl SimpleAI {
     }
 
     pub fn get_user_sstoken(&mut self, did: &str, ua_hash: &str) -> String {
+        if did == self.get_guest_did() {
+            return self.get_legacy_sstoken(did, ua_hash);
+        }
+        if !IdClaim::validity(did) {
+            return "Unknown".to_owned();
+        }
+        let context = self.tokenuser.lock().unwrap().get_user_context(did);
+        if context.is_default() || context.is_expired() {
+            return "Unknown".to_owned();
+        }
+        let now = Self::session_now();
+        let record = BrowserSession::new(did, &self.get_sys_did(), &context.get_sig(), now);
+        let session = browser_session::new_token();
+        if self.save_browser_session(&session, &record) {
+            self.sid_did_map.lock().unwrap().insert(session.clone(), did.to_owned());
+            session
+        } else {
+            warn!("Unable to persist browser session");
+            "Unknown".to_owned()
+        }
+    }
+
+    pub fn resolve_sstoken(&mut self, sstoken: &str, ua_hash: &str) -> String {
+        if sstoken.starts_with(browser_session::PREFIX) {
+            return self.resolve_browser_session(sstoken).to_string();
+        }
+        let did = self.check_legacy_sstoken(sstoken, ua_hash);
+        if did == "Unknown" {
+            return json!({"status": "invalid_legacy", "did": "", "sstoken": "", "expires_in": 0}).to_string();
+        }
+        if did == self.get_guest_did() {
+            return json!({"status": "valid", "did": did, "sstoken": sstoken, "expires_in": browser_session::IDLE_TIMEOUT}).to_string();
+        }
+        match self.legacy_upgrade(sstoken) {
+            Ok(Some(upgraded)) => return self.resolve_browser_session(&upgraded).to_string(),
+            Err(_) => {
+                return json!({"status": "unavailable", "did": "", "sstoken": "", "expires_in": 0}).to_string();
+            }
+            Ok(None) => {}
+        }
+        let upgraded = self.get_user_sstoken(&did, ua_hash);
+        if upgraded == "Unknown" {
+            return json!({"status": "unavailable", "did": "", "sstoken": "", "expires_in": 0}).to_string();
+        }
+        let alias_key = self.legacy_upgrade_key(sstoken);
+        let encoded = browser_session::encode_upgrade(&upgraded, &self.browser_session_crypt_key());
+        if !self.token_db.read().unwrap().insert_durable("user_sessions", &alias_key, &encoded) {
+            return json!({"status": "unavailable", "did": "", "sstoken": "", "expires_in": 0}).to_string();
+        }
+        json!({"status": "valid", "did": did, "sstoken": upgraded, "expires_in": browser_session::IDLE_TIMEOUT}).to_string()
+    }
+
+    pub fn revoke_sstoken(&mut self, sstoken: &str) -> bool {
+        if sstoken.starts_with(browser_session::PREFIX) {
+            let key = match browser_session::storage_key(sstoken, &self.get_sys_did()) {
+                Some(key) => key,
+                None => return false,
+            };
+            let encoded = match self.token_db.read().unwrap().get_optional("user_sessions", &key) {
+                Ok(Some(encoded)) => encoded,
+                Ok(None) => return true,
+                Err(_) => return false,
+            };
+            let crypt_key = self.browser_session_crypt_key();
+            let mut record = match BrowserSession::decode(&encoded, &crypt_key) {
+                Some(record) => record,
+                None => return false,
+            };
+            record.revoked = true;
+            let saved = self.save_browser_session(sstoken, &record);
+            if saved {
+                self.sid_did_map.lock().unwrap().remove(sstoken);
+            }
+            saved
+        } else if sstoken.from_base58().map_or(false, |bytes| bytes.len() == 32) {
+            match self.legacy_upgrade(sstoken) {
+                Ok(Some(upgraded)) => {
+                    if !self.revoke_sstoken(&upgraded) {
+                        return false;
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => return false,
+            }
+            let key = self.legacy_revocation_key(sstoken);
+            let saved = self.token_db.read().unwrap().insert_durable("user_sessions", &key, "revoked");
+            if saved {
+                self.sid_did_map.lock().unwrap().remove(sstoken);
+            }
+            saved
+        } else {
+            false
+        }
+    }
+
+    pub fn check_sstoken_and_get_did(&mut self, sstoken: &str, ua_hash: &str) -> String {
+        if sstoken.starts_with(browser_session::PREFIX) {
+            let result = self.resolve_browser_session(sstoken);
+            if result["status"] == "valid" {
+                result["did"].as_str().unwrap_or("Unknown").to_owned()
+            } else {
+                self.sid_did_map.lock().unwrap().remove(sstoken);
+                "Unknown".to_owned()
+            }
+        } else {
+            let did = self.check_legacy_sstoken(sstoken, ua_hash);
+            if did == "Unknown" || did == self.get_guest_did() {
+                return did;
+            }
+            match self.legacy_upgrade(sstoken) {
+                Ok(Some(upgraded)) => {
+                    let result = self.resolve_browser_session(&upgraded);
+                    if result["status"] == "valid" {
+                        did
+                    } else {
+                        self.sid_did_map.lock().unwrap().remove(sstoken);
+                        "Unknown".to_owned()
+                    }
+                }
+                Ok(None) => did,
+                Err(_) => "Unknown".to_owned(),
+            }
+        }
+    }
+
+    fn get_legacy_sstoken(&mut self, did: &str, ua_hash: &str) -> String {
         if IdClaim::validity(did) {
             let now_sec = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -967,15 +1190,22 @@ impl SimpleAI {
         }
     }
 
-    pub fn check_sstoken_and_get_did(&mut self, sstoken: &str, ua_hash: &str) -> String {
+    fn check_legacy_sstoken(&mut self, sstoken: &str, ua_hash: &str) -> String {
         let sstoken_bytes = sstoken.from_base58().unwrap_or([0; 32].to_vec());
         if sstoken_bytes.len() != 32 || sstoken_bytes == [0; 32] {
             println!(
-                "{} [SimpBase] The sstoken is incorrect format: {}",
-                token_utils::now_string(),
-                sstoken
+                "{} [SimpBase] The sstoken is incorrect format",
+                token_utils::now_string()
             );
             return String::from("Unknown");
+        }
+        match self.token_db.read().unwrap().get_optional("user_sessions", &self.legacy_revocation_key(sstoken)) {
+            Ok(Some(value)) if value == "revoked" => {
+                self.sid_did_map.lock().unwrap().remove(sstoken);
+                return "Unknown".to_owned();
+            }
+            Err(_) => return "Unknown".to_owned(),
+            _ => {}
         }
         let mut padded_sstoken_bytes: [u8; 32] = [0; 32];
         padded_sstoken_bytes.copy_from_slice(&sstoken_bytes);
@@ -1063,10 +1293,8 @@ impl SimpleAI {
                 }
             } else {
                 println!(
-                    "{} [SimpBase] The sstoken is not validity: {}/{}",
-                    token_utils::now_string(),
-                    sstoken,
-                    ua_hash
+                    "{} [SimpBase] The legacy sstoken is invalid or expired",
+                    token_utils::now_string()
                 );
                 String::from("Unknown")
             }

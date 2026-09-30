@@ -1,4 +1,6 @@
 import os
+import json
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -21,7 +23,7 @@ def run_from_isolated_script_root():
         shutil.copyfile(__file__, runner_path)
         env = os.environ.copy()
         env["SIMPLEAI_BASE_SMOKE_CHILD"] = "1"
-        result = subprocess.run([sys.executable, "-s", runner_path], cwd=runner_dir, env=env)
+        result = subprocess.run([sys.executable, "-s", runner_path], cwd=runner_dir, env=env, timeout=180)
         if result.returncode != 0:
             raise SystemExit(result.returncode)
         return True
@@ -31,6 +33,14 @@ def run_from_isolated_script_root():
 
 def main():
     from simpleai_base import simpleai_base
+
+    if os.environ.get("SIMPLEAI_BASE_VERIFY_SESSION") == "1":
+        expected = json.load(sys.stdin)
+        token = simpleai_base.init_local()
+        result = json.loads(token.resolve_sstoken(expected["session"], expected["ua"]))
+        assert_true(result["status"] == "valid", "session must remain valid in another process")
+        assert_true(result["did"] == expected["did"], "session identity must survive another process")
+        return
 
     print("SimpAI base local-mode smoke test ...")
     userhome = tempfile.mkdtemp(prefix="simpleai_base_local_")
@@ -83,7 +93,45 @@ def main():
         assert_true(token.set_user_can_download_models(member_did, True) == "OK", "Admin should update member model download permission")
         assert_true(token.can_user_download_models(member_did), "member should download models after permission is enabled")
 
-        print("SimpAI base local-mode smoke test OK")
+        old_ua = hashlib.sha256(b"Chrome/140").hexdigest()
+        new_ua = hashlib.sha256(b"Chrome/141").hexdigest()
+        session = token.get_user_sstoken(admin_did, old_ua)
+        assert_true(session.startswith("s2_"), "signed-in browsers should receive persistent random credentials")
+        result = json.loads(token.resolve_sstoken(session, new_ua))
+        assert_true(result["status"] == "valid" and result["did"] == admin_did, "browser upgrades must preserve identity")
+        assert_true(0 < result["expires_in"] <= 90 * 86400, "session idle lifetime must be bounded")
+        assert_true(token.check_sstoken_and_get_did(session, new_ua) == admin_did, "existing identity APIs must accept persistent sessions")
+        env = os.environ.copy()
+        env["SIMPLEAI_BASE_VERIFY_SESSION"] = "1"
+        child = subprocess.run(
+            [sys.executable, "-s", os.path.abspath(__file__)],
+            input=json.dumps({"session": session, "ua": new_ua, "did": admin_did}),
+            text=True, env=env, timeout=120,
+        )
+        assert_true(child.returncode == 0, "cross-process browser session verification should succeed")
+        assert_true(token.revoke_sstoken(session), "explicit logout must revoke its credential")
+        assert_true(json.loads(token.resolve_sstoken(session, old_ua))["status"] == "revoked", "revoked credentials must not renew")
+        assert_true(token.check_sstoken_and_get_did(session, old_ua) == "Unknown", "revoked credentials must not grant identity")
+
+        legacy = token.get_legacy_sstoken(admin_did, old_ua)
+        migrated = json.loads(token.resolve_sstoken(legacy, old_ua))
+        assert_true(migrated["status"] == "valid" and migrated["sstoken"].startswith("s2_"), "valid legacy login should migrate")
+        repeated = json.loads(token.resolve_sstoken(legacy, old_ua))
+        assert_true(repeated["sstoken"] == migrated["sstoken"], "tabs must share the same legacy upgrade")
+        assert_true(token.check_sstoken_and_get_did(legacy, new_ua) == "Unknown", "unmigrated legacy checks must retain their original binding")
+        assert_true(token.revoke_sstoken(migrated["sstoken"]), "migrated login should be revocable")
+        assert_true(token.check_sstoken_and_get_did(legacy, old_ua) == "Unknown", "legacy credentials must not bypass migrated-session logout")
+        assert_true(json.loads(token.resolve_sstoken(legacy, old_ua))["status"] == "revoked", "legacy logout must not issue another upgraded token")
+
+        legacy_ua = hashlib.sha256(b"legacy-second-browser").hexdigest()
+        legacy = token.get_legacy_sstoken(admin_did, legacy_ua)
+        migrated = json.loads(token.resolve_sstoken(legacy, legacy_ua))
+        assert_true(migrated["status"] == "valid", "another browser should migrate independently")
+        assert_true(token.revoke_sstoken(legacy), "a stale browser must be able to revoke its legacy credential")
+        assert_true(json.loads(token.resolve_sstoken(migrated["sstoken"], new_ua))["status"] == "revoked", "legacy logout must also revoke its upgraded credential")
+        assert_true(token.check_sstoken_and_get_did(legacy, legacy_ua) == "Unknown", "revoked legacy credentials must remain rejected")
+
+        print("SimpAI base local-mode and browser-session smoke tests OK")
     finally:
         shutil.rmtree(userhome, ignore_errors=True)
 
