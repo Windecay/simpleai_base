@@ -266,12 +266,15 @@ impl GlobalLocalVars {
         self.set_local_vars(&admin_key, value, &admin_did);
     }
 
-    pub(crate) fn set_local_vars(&mut self, key: &str, value: &str, user_did: &str) {
+    pub(crate) fn set_local_vars(&mut self, key: &str, value: &str, user_did: &str) -> bool {
+        if user_did.is_empty() || user_did == "Unknown" {
+            return false;
+        }
         let is_admin_var = key.starts_with("admin_");
         let admin_did = self.get_admin_did();
         if is_admin_var && admin_did != user_did {
             println!("非管理员用户 {} 在尝试设置管理员变量 {}", user_did, key);
-            return;
+            return false;
         }
         let (local_key, local_value) = if is_admin_var {
             // 管理员变量需要加密
@@ -280,6 +283,9 @@ impl GlobalLocalVars {
                     .lock()
                     .unwrap()
                     .encrypt_for_did(&value.as_bytes(), &admin_did, 0);
+            if encrypted_value.is_empty() || encrypted_value == "Unknown" {
+                return false;
+            }
             (self.canonical_admin_key(key), encrypted_value)
         } else {
             // 普通用户变量
@@ -288,30 +294,22 @@ impl GlobalLocalVars {
                 value.to_string(),
             )
         };
-        let _ = match self.token_db.write() {
-            Ok(mut guard) => guard.insert("global_local_vars", &local_key, &local_value),
+        match self.token_db.write() {
+            Ok(guard) => guard.insert_durable("global_local_vars", &local_key, &local_value),
             Err(e) => {
                 error!("获取global_local_vars写锁失败: {:?}", e);
                 false
             }
-        };
+        }
     }
 
-    pub fn set_local_vars_for_guest(&mut self, key: &str, value: &str, user_did: &str) {
+    pub fn set_local_vars_for_guest(&mut self, key: &str, value: &str, user_did: &str) -> bool {
         let admin = self.didtoken.lock().unwrap().get_admin_did();
         let guest = self.guest_did.clone();
-        if admin != user_did {
-            return;
+        if admin.is_empty() || admin == "Unknown" || admin != user_did || key.starts_with("admin_") {
+            return false;
         }
-        let local_key = format!("{}_{}_{}", guest, self.sys_did, key);
-        let local_value = value.to_string();
-        let _ = match self.token_db.write() {
-            Ok(mut guard) => guard.insert("global_local_vars", &local_key, &local_value),
-            Err(e) => {
-                error!("获取global_local_vars写锁失败: {:?}", e);
-                false
-            }
-        };
+        self.set_local_vars(key, value, &guest)
     }
 
     pub fn get_message_list(&self, user_did: &str) -> String {

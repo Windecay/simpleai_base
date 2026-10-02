@@ -196,10 +196,28 @@ impl TokenDB {
     }
 
     pub fn insert_durable(&self, tree: &str, key: &str, value: &str) -> bool {
-        if let Some(tree) = self.trees.get(tree) {
-            tree.insert(key, value.as_bytes()).is_ok() && tree.flush().is_ok()
+        if let Some(local_tree) = self.trees.get(tree) {
+            match local_tree.insert(key, value.as_bytes()).and_then(|_| local_tree.flush()) {
+                Ok(_) => true,
+                Err(e) => {
+                    error!("Failed to persist token database tree {}: {}", tree, e);
+                    false
+                }
+            }
         } else {
-            self.insert(tree, key, value)
+            if !api::service_online() {
+                return false;
+            }
+            match api::request_api_sync::<bool>(
+                "db_insert",
+                Some(json!({"tree": tree, "key": key, "value": value, "durable": true})),
+            ) {
+                Ok(saved) => saved,
+                Err(e) => {
+                    error!("Failed to persist value in remote DB: {}", e);
+                    false
+                }
+            }
         }
     }
 
@@ -292,6 +310,45 @@ mod tests {
         );
         db.trees["user_sessions"].insert("corrupt", vec![255u8]).unwrap();
         assert!(db.get_optional("user_sessions", "corrupt").is_err());
+    }
+
+    #[test]
+    fn preference_writes_report_storage_errors() {
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let tree = db.open_tree("global_local_vars").unwrap();
+        let token_db = TokenDB {
+            sled_db: Arc::new(RwLock::new(Some(db.clone()))),
+            trees: HashMap::from([("global_local_vars".to_owned(), tree)]),
+        };
+        assert!(token_db.insert_durable("global_local_vars", "guest_system_user_presets", "B,A"));
+        assert_eq!(
+            token_db.get_optional("global_local_vars", "guest_system_user_presets").unwrap(),
+            Some("B,A".to_owned())
+        );
+        db.drop_tree("global_local_vars").unwrap();
+        assert!(!token_db.insert_durable("global_local_vars", "guest_system_user_presets", "A"));
+    }
+
+    #[test]
+    fn preferences_survive_database_reopen_without_changing_namespace() {
+        let parent = std::env::temp_dir();
+        let path = parent.join(format!("simpleai-prefs-test-{}", crate::browser_session::new_token()));
+        let key = "guest_system_user_presets";
+        {
+            let db = sled::Config::new().path(&path).flush_every_ms(None).open().unwrap();
+            let tree = db.open_tree("global_local_vars").unwrap();
+            let token_db = TokenDB {
+                sled_db: Arc::new(RwLock::new(Some(db))),
+                trees: HashMap::from([("global_local_vars".to_owned(), tree)]),
+            };
+            assert!(token_db.insert_durable("global_local_vars", key, "B,A"));
+        }
+        {
+            let db = sled::open(&path).unwrap();
+            assert_eq!(db.open_tree("global_local_vars").unwrap().get(key).unwrap().unwrap().as_ref(), b"B,A");
+        }
+        assert!(path.starts_with(&parent));
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

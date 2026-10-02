@@ -1355,6 +1355,8 @@ struct DbInsertRequest {
     tree: String,
     key: String,
     value: String,
+    #[serde(default)]
+    durable: bool,
 }
 
 async fn handle_db_insert(
@@ -1362,7 +1364,11 @@ async fn handle_db_insert(
 ) -> Result<impl Reply, Rejection> {
     let token_db = TokenDB::instance();
     let token_db = token_db.write().unwrap();
-    let value = token_db.insert(&req.tree, &req.key, &req.value);
+    let value = if req.durable {
+        token_db.insert_durable(&req.tree, &req.key, &req.value)
+    } else {
+        token_db.insert(&req.tree, &req.key, &req.value)
+    };
     Ok(warp::reply::json(&ApiResponse {
         success: true,
         data: value,

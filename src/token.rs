@@ -540,6 +540,9 @@ impl SimpleAI {
         ua_hash: &str,
     ) -> String {
         let user_did = self.check_sstoken_and_get_did(user_session, ua_hash);
+        if user_did.is_empty() || user_did == "Unknown" {
+            return default.to_string();
+        }
         self.global_local_vars
             .read()
             .unwrap()
@@ -553,12 +556,42 @@ impl SimpleAI {
             .get_local_admin_vars(key)
     }
 
-    pub fn set_local_vars(&mut self, key: &str, value: &str, user_session: &str, ua_hash: &str) {
+    pub fn set_local_vars(&mut self, key: &str, value: &str, user_session: &str, ua_hash: &str) -> bool {
         let user_did = self.check_sstoken_and_get_did(user_session, ua_hash);
-        self.global_local_vars
-            .write()
-            .unwrap()
-            .set_local_vars(key, value, &user_did)
+        match self.global_local_vars.write() {
+            Ok(mut vars) => vars.set_local_vars(key, value, &user_did),
+            Err(e) => {
+                error!("Failed to save local variable: {}", e);
+                false
+            }
+        }
+    }
+
+    // Local preferences retain the original guest namespace without a browser credential.
+    // This API is disabled as soon as an administrator exists.
+    pub fn get_local_mode_vars(&self, key: &str, default: &str) -> PyResult<String> {
+        if !self.absent_admin() || key.starts_with("admin_") {
+            return Err(pyo3::exceptions::PyPermissionError::new_err(
+                "Local-mode settings require a node without an administrator",
+            ));
+        }
+        let vars = self.global_local_vars.read().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
+        })?;
+        Ok(vars.get_local_vars(key, default, &self.guest_did))
+    }
+
+    pub fn set_local_mode_vars(&mut self, key: &str, value: &str) -> bool {
+        if !self.absent_admin() || key.starts_with("admin_") {
+            return false;
+        }
+        match self.global_local_vars.write() {
+            Ok(mut vars) => vars.set_local_vars(key, value, &self.guest_did),
+            Err(e) => {
+                error!("Failed to save local-mode variable: {}", e);
+                false
+            }
+        }
     }
 
     pub fn set_local_admin_vars(
@@ -601,12 +634,15 @@ impl SimpleAI {
         value: &str,
         user_session: &str,
         ua_hash: &str,
-    ) {
+    ) -> bool {
         let user_did = self.check_sstoken_and_get_did(user_session, ua_hash);
-        self.global_local_vars
-            .write()
-            .unwrap()
-            .set_local_vars_for_guest(key, value, &user_did)
+        match self.global_local_vars.write() {
+            Ok(mut vars) => vars.set_local_vars_for_guest(key, value, &user_did),
+            Err(e) => {
+                error!("Failed to save guest variable: {}", e);
+                false
+            }
+        }
     }
 
     pub fn can_user_generate(&self, did: &str) -> bool {
