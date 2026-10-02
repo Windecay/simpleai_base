@@ -34,6 +34,13 @@ def run_from_isolated_script_root():
 def main():
     from simpleai_base import simpleai_base
 
+    if os.environ.get("SIMPLEAI_BASE_VERIFY_PREFS") == "1":
+        expected = json.load(sys.stdin)
+        token = simpleai_base.init_local()
+        assert_true(token.get_local_mode_vars("user_presets", "") == expected["presets"], "local preferences must survive another process")
+        assert_true(token.set_local_mode_vars("user_presets", "B,A") is True, "cross-process preference writes must report success")
+        return
+
     if os.environ.get("SIMPLEAI_BASE_VERIFY_SESSION") == "1":
         expected = json.load(sys.stdin)
         token = simpleai_base.init_local()
@@ -53,6 +60,24 @@ def main():
         token = simpleai_base.init_local()
         token.set_user_base_dir(userhome)
 
+        ua = hashlib.sha256(b"local-browser").hexdigest()
+        guest_session = token.get_guest_sstoken(ua)
+        assert_true(token.set_local_vars("user_presets", "A,B", guest_session, ua) is True, "valid guest preferences must save")
+        assert_true(token.get_local_mode_vars("user_presets", "") == "A,B", "local-mode API must reuse existing guest preferences")
+        assert_true(token.set_local_vars("user_presets", "wrong", "expired-session", ua) is False, "invalid sessions must not write Unknown preferences")
+        assert_true(token.get_local_vars("user_presets", "rejected", "expired-session", ua) == "rejected", "invalid sessions must not read Unknown preferences")
+        assert_true(token.set_local_mode_vars("user_presets", "B") is True, "local-mode saves must not require a browser token")
+        assert_true(token.get_local_vars("user_presets", "", guest_session, ua) == "B", "local saves must stay in the guest namespace")
+        assert_true(token.set_local_mode_vars("admin_guest_can_generate", "true") is False, "local-mode API must not write admin settings")
+        assert_true(token.set_local_vars_for_guest("user_presets", "wrong", guest_session, ua) is False, "guest sync remains admin-only even before an admin exists")
+        env = dict(os.environ, SIMPLEAI_BASE_VERIFY_PREFS="1")
+        child = subprocess.run(
+            [sys.executable, "-s", os.path.abspath(__file__)],
+            input=json.dumps({"presets": "B"}), text=True, env=env, timeout=120,
+        )
+        assert_true(child.returncode == 0, "cross-process preference verification should succeed")
+        assert_true(token.get_local_mode_vars("user_presets", "") == "B,A", "cross-process writes must be visible to the original process")
+
         assert_true(token.get_upstream_did() == "", "upstream DID should be empty in local mode")
         assert_true(token.get_p2p_status() == "Off", "P2P should be disabled in local mode")
         assert_true(token.get_default_workspace_did() == token.get_local_did(), "empty node should use Local workspace DID")
@@ -71,6 +96,13 @@ def main():
         admin_did = admin_context.get_did()
         assert_true(admin_did and not token.is_guest(admin_did), "first local identity should become Admin")
         assert_true(token.get_admin_did() == admin_did, "Admin DID should be set")
+        assert_true(token.set_local_mode_vars("user_presets", "wrong") is False, "local-mode writes must be disabled after admin creation")
+        try:
+            token.get_local_mode_vars("user_presets", "")
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("local-mode reads must be disabled after admin creation")
 
         admin_outputs = token.get_path_in_user_dir(admin_did, "outputs")
         assert_true(f"{os.sep}admin_" in os.path.normpath(admin_outputs), "Admin should use admin_ folder")
@@ -96,6 +128,16 @@ def main():
         old_ua = hashlib.sha256(b"Chrome/140").hexdigest()
         new_ua = hashlib.sha256(b"Chrome/141").hexdigest()
         session = token.get_user_sstoken(admin_did, old_ua)
+        member_session = token.get_user_sstoken(member_did, old_ua)
+        assert_true(token.set_local_vars("user_presets", "admin-list", session, old_ua) is True, "admin preferences must save")
+        assert_true(token.set_local_vars("user_presets", "member-list", member_session, old_ua) is True, "member preferences must save")
+        assert_true(token.get_local_vars("user_presets", "", session, new_ua) == "admin-list", "browser upgrades must retain admin preferences")
+        assert_true(token.get_local_vars("user_presets", "", member_session, new_ua) == "member-list", "member preferences must be isolated")
+        assert_true(token.get_local_vars("user_presets", "", guest_session, ua) == "B,A", "admin creation must preserve guest preferences")
+        assert_true(token.set_local_vars("admin_guest_can_generate", "true", member_session, new_ua) is False, "members must not write admin preferences")
+        assert_true(token.set_local_vars_for_guest("user_presets", "wrong", member_session, new_ua) is False, "members must not sync guest preferences")
+        assert_true(token.set_local_vars_for_guest("user_presets", "guest-default", session, new_ua) is True, "admin guest sync must report success")
+        assert_true(token.get_local_vars("user_presets", "", guest_session, ua) == "guest-default", "admin sync must use the original guest namespace")
         assert_true(session.startswith("s2_"), "signed-in browsers should receive persistent random credentials")
         result = json.loads(token.resolve_sstoken(session, new_ua))
         assert_true(result["status"] == "valid" and result["did"] == admin_did, "browser upgrades must preserve identity")
@@ -110,6 +152,7 @@ def main():
         )
         assert_true(child.returncode == 0, "cross-process browser session verification should succeed")
         assert_true(token.revoke_sstoken(session), "explicit logout must revoke its credential")
+        assert_true(token.set_local_vars("user_presets", "wrong", session, new_ua) is False, "revoked sessions must not save preferences")
         assert_true(json.loads(token.resolve_sstoken(session, old_ua))["status"] == "revoked", "revoked credentials must not renew")
         assert_true(token.check_sstoken_and_get_did(session, old_ua) == "Unknown", "revoked credentials must not grant identity")
 
