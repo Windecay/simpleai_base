@@ -13,6 +13,61 @@ def assert_true(condition, message):
         raise AssertionError(message)
 
 
+def verify_launcher_cold_restarts(runner_dir):
+    app_dir = os.path.join(runner_dir, "identity_app")
+    os.mkdir(app_dir)
+    entry = os.path.join(app_dir, "entry.py")
+    with open(entry, "w", encoding="utf-8") as stream:
+        stream.write('''import json, os, sys
+os.chdir(os.path.dirname(__file__))
+from simpleai_base import simpleai_base
+token = simpleai_base.init_local()
+if os.environ.get("SIMPLEAI_ROOT_TEST_WRITE") == "1":
+    assert token.set_local_mode_vars("user_presets", "A,B") is True
+result = {
+    "root": json.loads(token.get_sysinfo().to_json())["root_dir"],
+    "system": token.get_sys_did(),
+    "guest": token.get_guest_did(),
+    "device": token.get_device_did(),
+    "presets": token.get_local_mode_vars("user_presets", "missing"),
+}
+print("IDENTITY_RESTART=" + json.dumps(result), flush=True)
+sys.stderr.flush()
+os._exit(0)
+''')
+    wrappers = []
+    for name in ("launcher_a", "launcher_b"):
+        folder = os.path.join(runner_dir, name)
+        os.mkdir(folder)
+        wrapper = os.path.join(folder, "bootstrap.py")
+        with open(wrapper, "w", encoding="utf-8") as stream:
+            stream.write(
+                "import os, runpy, sys\n"
+                "target = os.path.abspath(sys.argv[1])\n"
+                "sys.argv = [target] + sys.argv[2:]\n"
+                "runpy.run_path(target, run_name='__main__')\n"
+            )
+        wrappers.append(wrapper)
+    reference = None
+    for index, args in enumerate(([wrappers[0], entry], [wrappers[1], entry], [entry])):
+        env = dict(os.environ, RUST_LOG="off", SIMPLEAI_ROOT_TEST_WRITE="1" if index == 0 else "0")
+        child = subprocess.run(
+            [sys.executable, "-s", *args], cwd=runner_dir, env=env,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90,
+        )
+        assert_true(child.returncode == 0, f"cold-start child failed: {child.stdout}\n{child.stderr}")
+        lines = [line for line in child.stdout.splitlines() if line.startswith("IDENTITY_RESTART=")]
+        assert_true(len(lines) == 1, "cold-start result must be present")
+        result = json.loads(lines[0].split("=", 1)[1])
+        assert_true(os.path.samefile(result["root"], app_dir), "identity root must be the application, not its bootstrap")
+        assert_true(result["presets"] == "A,B", "saved preferences must survive a complete process exit")
+        if reference is None:
+            reference = result
+        else:
+            assert_true(result == reference, "launcher extraction paths must not change identities or preferences")
+    print("Launcher cold-restart identity and preference tests OK")
+
+
 def run_from_isolated_script_root():
     if os.environ.get("SIMPLEAI_BASE_SMOKE_CHILD") == "1":
         return False
@@ -20,6 +75,7 @@ def run_from_isolated_script_root():
     runner_dir = tempfile.mkdtemp(prefix="simpleai_base_root_")
     runner_path = os.path.join(runner_dir, "smoke_runner.py")
     try:
+        verify_launcher_cold_restarts(runner_dir)
         shutil.copyfile(__file__, runner_path)
         env = os.environ.copy()
         env["SIMPLEAI_BASE_SMOKE_CHILD"] = "1"

@@ -7,12 +7,63 @@ use std::path::{Path, PathBuf};
 use std::fs;
 use std::time::UNIX_EPOCH;
 use base58::ToBase58;
+use once_cell::sync::OnceCell;
 
 use sysinfo::System;
 use tracing::debug;
 
 use crate::dids::token_utils;
 use crate::utils::env_utils;
+
+static PYTHON_ENTRY_ROOT: OnceCell<PathBuf> = OnceCell::new();
+
+pub(crate) fn capture_python_entry_root(py: Python<'_>) {
+    // A runpy launcher changes Python's entry point, not the OS process arguments.
+    // Capture it while importing the extension, before any native worker starts.
+    let argv0 = py.import_bound("sys")
+        .and_then(|module| module.getattr("argv"))
+        .and_then(|argv| argv.get_item(0))
+        .and_then(|value| value.extract::<String>())
+        .ok();
+    let main_file = py.import_bound("__main__")
+        .and_then(|module| module.getattr("__file__"))
+        .and_then(|value| value.extract::<String>())
+        .ok();
+    if let Ok(cwd) = env::current_dir() {
+        if let Some(root) = python_entry_root(argv0.as_deref(), main_file.as_deref(), &cwd) {
+            let _ = PYTHON_ENTRY_ROOT.set(root);
+        }
+    }
+}
+
+fn python_entry_root(argv0: Option<&str>, main_file: Option<&str>, cwd: &Path) -> Option<PathBuf> {
+    [argv0, main_file].into_iter().flatten()
+        .find_map(|entry| script_root(entry, cwd))
+}
+
+fn script_root(entry: &str, cwd: &Path) -> Option<PathBuf> {
+    if entry.is_empty() || entry.starts_with('-') || entry.starts_with('<') {
+        return None;
+    }
+    let path = Path::new(entry);
+    let full_path = cwd.join(path);
+    if full_path.is_file() {
+        return full_path.parent()?.canonicalize().ok();
+    }
+    // Studio may have changed cwd to the script directory before importing base.
+    if path.is_relative() {
+        let local_path = cwd.join(path.file_name()?);
+        if local_path.is_file() {
+            return local_path.parent()?.canonicalize().ok();
+        }
+    }
+    None
+}
+
+fn process_entry_root() -> Option<PathBuf> {
+    let entry = env::args().find(|arg| !arg.starts_with('-') && arg.ends_with(".py"))?;
+    script_root(&entry, &env::current_dir().ok()?)
+}
 
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -75,48 +126,16 @@ impl SystemBaseInfo {
         let (cpu_brand, cpu_cores) = (sys.cpus()[0].brand(), sys.physical_core_count());
         let (ram_total, ram_free, ram_swap) = (sys.total_memory(), sys.available_memory(), sys.total_swap());
 
-        let mut py_path = env::args().find(|arg| !arg.starts_with('-') && arg.ends_with(".py"));
-        let root_dir = py_path
-            .and_then(|arg| {
-                let path = PathBuf::from(&arg);
-                let abs_path = if path.is_absolute() {
-                    path.clone()
-                } else {
-                    //解析path分别获取文件名部分
-                    let file_name = path.file_name().unwrap_or(std::ffi::OsStr::new(""));
-
-                    env::current_dir()
-                        .ok()?
-                        .join(&file_name)
-                };
-                //println!("root_dir is: {:?}, path={:?}", abs_path, path);
-                match fs::metadata(&abs_path) {
-                    Ok(metadata) => {
-                        if metadata.is_file() {
-                            tracing::debug!("输入为文件路径，提取所在目录");
-                            abs_path.parent().map(|p| p.to_path_buf())
-                        } else {
-                            Some(abs_path)
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("路径访问错误: {:?}", e);
-                        None
-                    }
-                }
-            })
-            .and_then(|p| {
-                if p.exists() {
-                    p.canonicalize().ok()
-                } else {
-                    tracing::error!("路径不存在: {:?}", p);
-                    None
-                }
-            })
-            .unwrap_or_else(|| {
-                tracing::warn!("使用默认根目录");
-                PathBuf::from("/")
-            });
+        let (root_dir, root_source) = if let Some(root) = PYTHON_ENTRY_ROOT.get() {
+            (root.clone(), "python_entry")
+        } else if let Some(root) = process_entry_root() {
+            (root, "process_args")
+        } else {
+            tracing::warn!("使用默认根目录");
+            (PathBuf::from("/"), "default")
+        };
+        println!("{} [SimpBase] Identity root: {} (source={})",
+            token_utils::now_string(), root_dir.display(), root_source);
 
         let root_name = Path::new(&root_dir)
             .file_name()
@@ -687,4 +706,72 @@ fn find_oldest_file(path: &str) -> u64 {
     }
 
     (oldest_time/100000)*100000
+}
+
+#[cfg(test)]
+mod root_tests {
+    use super::*;
+
+    struct TestRoot(PathBuf);
+
+    impl TestRoot {
+        fn new() -> Self {
+            let suffix = std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let path = env::temp_dir().join(format!("simpleai-root-{}-{}", std::process::id(), suffix));
+            fs::create_dir(&path).unwrap();
+            fs::create_dir(path.join("app")).unwrap();
+            fs::write(path.join("app/entry.py"), b"").unwrap();
+            Self(path)
+        }
+
+        fn expected(&self) -> Option<PathBuf> {
+            Some(self.0.join("app").canonicalize().unwrap())
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn absolute_python_entry_retains_existing_root() {
+        let root = TestRoot::new();
+        assert_eq!(script_root(root.0.join("app/entry.py").to_str().unwrap(), &root.0), root.expected());
+    }
+
+    #[test]
+    fn relative_entry_preserves_parent_components() {
+        let root = TestRoot::new();
+        fs::write(root.0.join("entry.py"), b"").unwrap();
+        assert_eq!(script_root("app/entry.py", &root.0), root.expected());
+    }
+
+    #[test]
+    fn relative_entry_survives_application_chdir() {
+        let root = TestRoot::new();
+        assert_eq!(script_root("app/entry.py", &root.0.join("app")), root.expected());
+    }
+
+    #[test]
+    fn rewritten_argv_beats_bootstrap_main_file() {
+        let root = TestRoot::new();
+        fs::write(root.0.join("bootstrap.py"), b"").unwrap();
+        assert_eq!(python_entry_root(Some("app/entry.py"), Some("bootstrap.py"), &root.0), root.expected());
+    }
+
+    #[test]
+    fn inline_main_file_supplies_application_root() {
+        let root = TestRoot::new();
+        assert_eq!(python_entry_root(Some("-c"), Some("app/entry.py"), &root.0), root.expected());
+    }
+
+    #[test]
+    fn invalid_entries_do_not_choose_current_directory() {
+        let root = TestRoot::new();
+        for entry in ["", "-c", "-", "<stdin>", "missing.py", "app"] {
+            assert_eq!(python_entry_root(Some(entry), None, &root.0), None);
+        }
+    }
 }
