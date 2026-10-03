@@ -123,6 +123,8 @@ fn validity_did(did: String) -> bool {
 
 #[pymodule]
 fn simpleai_base(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    crate::utils::systeminfo::capture_python_entry_root(m.py());
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_function(wrap_pyfunction!(init_local, m)?)?;
     m.add_function(wrap_pyfunction!(cert_verify_by_did, m)?)?;
     m.add_function(wrap_pyfunction!(gen_entry_point_id, m)?)?;

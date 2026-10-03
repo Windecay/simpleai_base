@@ -109,3 +109,66 @@ Validation and release checks:
 - CPython 3.12 wheel compilation, installed-wheel smoke tests, and live Studio
   acceptance still require the CI artifacts. No staging, commit, push, wheel
   installation, or CI dispatch was performed for this synchronization.
+
+## Launcher Entry Identity Stability (0.3.56, 2026-10-03)
+
+- Two affected-user startup logs show different system and guest PEM filenames
+  and different guest DIDs across restarts of the same Studio version. Neither
+  log reports device-key regeneration or key decryption failure. The logs do
+  not include the actual identity root or native process arguments.
+- The 4.0.8 launcher can prepend its bundled `custom_node_bootstrap.py` when
+  custom-node loading policies are enabled. It updates Python `sys.argv` and
+  uses `runpy` to execute Studio, but native process arguments still begin with
+  the bootstrap. The old base resolver selects the first native `.py` argument,
+  so different extracted resource directories select different identities.
+- Reproduced with the published Windows CP313 0.3.55 wheel and the launcher's
+  actual bootstrap script in two directories: same application, profile and
+  database, unchanged device DID, but changed system/guest DIDs and missing
+  preferences. Returning to the first bootstrap restores the saved value.
+  This proves this launcher path can cause the symptom; the user's exact
+  bootstrap path is not present in the supplied logs.
+- Capture Python's current entry directory while importing the extension,
+  before native identity workers start. Prefer `sys.argv[0]`, then
+  `__main__.__file__`. Preserve full relative paths and support Studio changing
+  cwd to its entry directory before importing base. Native-argument and `/`
+  behavior remain for hosts with no usable Python entry; no arbitrary current
+  directory is adopted as a new identity root.
+- Log `Identity root` and its source before key initialization, even when Rust
+  tracing is disabled. Expose the compiled native `__version__` for verification.
+  Do not print keys, credentials, or preference values in production diagnostics.
+- Keep the same canonical application path, key derivation, token directory,
+  database, and preference namespace for normal script launches. Do not delete
+  old identities or automatically merge preferences from temporary launcher
+  identities: those cannot safely be attributed to one installation.
+- Add six focused Rust entry-resolution tests and an installed-wheel test that
+  saves in one process, fully exits, then reads through a second bootstrap and
+  the direct application entry. The existing `test.py` CI entry runs this check
+  before its local-mode/browser-session smoke tests; the controller never
+  initializes base. All subprocesses have explicit timeouts.
+- Source release version is 0.3.56. Studio's published download target remains
+  0.3.55 until real 0.3.56 wheels and hashes are available; no unpublished wheel
+  hash has been added. A compatible manually installed 0.3.56 is accepted by
+  Studio's existing version check.
+
+Validation and synchronization:
+
+- Offline Rust tests: 28 passed, including the six new root-resolution cases.
+  Debug and optimized CP313 native extension builds succeeded using cached
+  dependencies and OpenSSL; existing compiler warnings remain.
+- The real launcher bootstrap test passed five isolated, fully exited processes
+  with the new debug extension: unchanged application root, all three DIDs, key
+  filenames, and saved preferences. Each base service port was closed before
+  starting the next process.
+- Upgrade compatibility passed five isolated processes: the installed 0.3.55
+  wheel saved via the normal script entry, then the optimized 0.3.56 extension
+  read through two bootstrap locations, direct and relative script entries.
+  All original identities, keys and preferences were retained.
+- Shared source, version, tests and this record are identical in `local-user-mode`
+  and `build/py312`. Python 3.12-specific metadata and CI settings are unchanged.
+  Studio's targeted version/persistence tests passed 47 cases; Python 3.12 syntax
+  parsing and both base worktree whitespace checks passed.
+- Local runtime checks loaded the compiled extension directly in isolated test
+  processes, not a newly packaged wheel. No installed package or real user
+  tokens were changed. No full Studio, browser, GPU model, complete installed-wheel
+  `test.py`, CP312/macOS/Linux runtime, or GitHub Actions job was executed.
+  No staging, commit, push, wheel installation or upload was performed.
