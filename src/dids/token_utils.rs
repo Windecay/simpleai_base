@@ -525,24 +525,54 @@ pub(crate) fn get_user_token_from_file(did: &str, sys_did: &str) -> UserContext 
                     let sys_key = calc_sha256(&read_key_or_generate_key(
                         "System", &[0u8; 32], "None", false, false,
                     ));
-                    let json_string = serde_json::to_string(&value).unwrap_or(String::from("{}"));
-                    let token_data = decrypt(
-                        &URL_SAFE_NO_PAD
-                            .decode(json_string)
-                            .unwrap_or([0u8; 32].to_vec()),
-                        &sys_key,
-                        0,
-                    );
-                    let user_token: Value =
-                        serde_json::from_slice(&token_data).unwrap_or(serde_json::json!({}));
-                    serde_json::from_value(user_token.clone())
-                        .unwrap_or_else(|_| UserContext::default())
+                    decode_user_context_value(value, &sys_key)
                 }
                 None => UserContext::default(),
             };
             user_context
         }
         false => UserContext::default(),
+    }
+}
+
+fn decode_user_context_value(value: &Value, sys_key: &[u8; 32]) -> UserContext {
+    // The JSON value already contains the base64 string. Serializing it again
+    // adds quotes, causing every subsequent login to create a new context and
+    // revoke browser sessions bound to the previous context signature.
+    let Some(encoded) = value.as_str() else {
+        return UserContext::default();
+    };
+    let Ok(ciphertext) = URL_SAFE_NO_PAD.decode(encoded) else {
+        return UserContext::default();
+    };
+    serde_json::from_slice(&decrypt(&ciphertext, sys_key, 0))
+        .unwrap_or_else(|_| UserContext::default())
+}
+
+#[cfg(test)]
+mod stored_context_tests {
+    use super::*;
+
+    #[test]
+    fn stored_json_string_round_trips_the_existing_identity_context() {
+        let key = [17u8; 32];
+        let original = UserContext::new("user-did", "system-did", "browser-test", "standard", "[]");
+        let encoded = URL_SAFE_NO_PAD.encode(encrypt(original.to_json_string().as_bytes(), &key, 0));
+        let stored: Value = serde_json::from_str(&json!({"system-did": encoded}).to_string()).unwrap();
+        let loaded = decode_user_context_value(&stored["system-did"], &key);
+        assert!(!loaded.is_default());
+        assert_eq!(loaded.to_json_string(), original.to_json_string());
+    }
+
+    #[test]
+    fn malformed_or_wrong_key_context_is_rejected() {
+        let key = [17u8; 32];
+        for value in [Value::Null, json!({}), json!(12), json!("not valid base64") ] {
+            assert!(decode_user_context_value(&value, &key).is_default());
+        }
+        let context = UserContext::new("user-did", "system-did", "test", "standard", "[]");
+        let encoded = URL_SAFE_NO_PAD.encode(encrypt(context.to_json_string().as_bytes(), &key, 0));
+        assert!(decode_user_context_value(&json!(encoded), &[19u8; 32]).is_default());
     }
 }
 
