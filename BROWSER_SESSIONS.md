@@ -1,5 +1,23 @@
 # Browser Sessions (0.3.54)
 
+## 0.3.57: concurrent browser sign-in
+
+The saved per-system identity context is a JSON string containing base64 ciphertext.
+Read that string directly; serializing the JSON value again adds quotes and makes
+decoding fail. That failure previously created a new context on each sign-in and
+invalidated existing `s2_` records through their context-signature binding.
+
+Ordinary repeated sign-in now preserves the existing context. Separate browsers,
+LAN and loopback addresses can hold independent valid sessions. Explicit session
+revocation, wrong passwords, altered contexts and expired sessions retain their
+existing rejection rules. Already-invalidated sessions require a fresh sign-in;
+the fix does not resurrect revoked credentials.
+
+Validated with the Windows CPython 3.13 wheel in isolated profiles: the first
+session stays valid after the second sign-in, invalid passwords remain rejected,
+and revoking the second session does not invalidate the first. No production
+credential files are involved in these probes.
+
 Authenticated browsers receive an opaque, random `s2_` credential. Its encrypted
 record is stored in the existing `user_sessions` database tree under a SHA-256
 index scoped to the installation DID. Browser User-Agent versions are not part
